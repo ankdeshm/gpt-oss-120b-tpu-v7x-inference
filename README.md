@@ -21,7 +21,7 @@ Production-ready inference recipes, **GKE + DWS Calendar Mode reservation** prov
 
 ---
 
-## Headline Performance Highlights
+## Performance Highlights
 
 All benchmarks use `vllm bench serve` with uncached random token IDs (`--ignore-eos`, zero prefix-cache reuse) and track strict per-request SLA Goodput (`TTFT <= 500 ms`, `TPOT <= 10 ms`, `E2EL <= 60 s`).
 
