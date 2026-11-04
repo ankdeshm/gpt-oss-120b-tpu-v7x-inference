@@ -59,26 +59,21 @@ Each `tpu7x` host (`4` physical chips = `8` TensorCores) runs `4` data-parallel 
 
 ## 4. Single-Host (`4` Chips) & Dual-Host (`8` Chips) Native BF16 (`lmsys/gpt-oss-120b-bf16`) Serving Stack Analysis
 
-`lmsys/gpt-oss-120b-bf16` stores all `128` routed experts in unquantized 16-bit `bfloat16` (`~233.7 GB` total checkpoint footprint in TPU HBM3e). Because each 4-chip Ironwood host possesses **`768 GB` aggregate HBM3e** (`192 GB` per chip @ `7.4 TB/s` = `29.6 TB/s` per host), the full unquantized model takes only `30.4%` of a single host's HBM3e (`~29.2 GB` per TensorCore at `TP=8, EP=8`), leaving `> 400 GB` of HBM3e free for KV cache.
+`lmsys/gpt-oss-120b-bf16` stores all `128` routed experts in unquantized 16-bit `bfloat16` (`~233.7 GB` total checkpoint footprint in TPU HBM3e). Because each 4-chip Ironwood host possesses **`768 GB` aggregate HBM3e** (`192 GB` per chip @ `7.4 TB/s`), the full unquantized model fits comfortably inside a single host with massive capacity remaining for KV cache.
 
-### 4.1 Precision & Serving Stack Deep Dive (`openai/gpt-oss-120b` MXFP4 vs. `lmsys/gpt-oss-120b-bf16` Native BF16)
+### 4.1 Native BF16 Serving Stack Overview & Runtime Patches
 
-| Serving Stack | `openai/gpt-oss-120b` (`65.3 GB` Native MXFP4) | `lmsys/gpt-oss-120b-bf16` (`233.7 GB` Pure Unquantized BF16) | Architectural & Patch Summary |
-|---|---|---|---|
-| **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Supported Out-of-the-Box** (`TP=8, EP=8`)<br>**`737.0 ms` TTFT**, **`4.09 ms` TPOT** | **Supported via Load-Time Patch** ([`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py))<br>**`739.5 ms` TTFT**, **`4.97 ms` TPOT**, **`5,084.5` tok/s** (`2` hosts) | Custom Pallas VPU kernel unpacks 4-bit `mxfp4` weights on the fly for MXFP4; for Native BF16, startup patch maps HF BF16 expert tensors, deinterleaves `swigluoai` (`[::2]`, `[1::2]`), and pads `hidden_size` (`2880 -> 2944`) |
-| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds CUDA/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`877.1 ms` TTFT**, **`5.30–5.95 ms` TPOT**, **`2,284.8` tok/s** (`1` host) | Upstream padded `intermediate_size` to `128`, but forgot to pad `hidden_size = 2880` (`22.5 × 128`). 6-line load-time patch pads `2880 -> 2944` (`+64` zero cols), eliminating Pallas `gmm_v2` out-of-bounds lane reads and speeding up decode **`3.2x` (`18.8 ms -> 5.95 ms` TPOT)** |
-| **`vllm-tpu`** *(JAX `tpu-inference`)* | **Supported Out-of-the-Box** (`TP=2, DP=4` per host)<br>**`5,847.0` tok/s** (`1`h) -> **`20,366.9` tok/s** (`4`h) | **Supported Out-of-the-Box (Zero Patches)** (`TP=8, --enable-expert-parallel`)<br>**`880.3 ms` TTFT**, **`8.21–8.48 ms` TPOT**, **`2,540.3` tok/s** (`1` host) | Unpacks MXFP4 in VPU (`4` DP replicas per 4-chip host); runs Native BF16 out-of-the-box with zero patches |
-
-1. **Why `openai/gpt-oss-120b` (`gpt_oss_mxfp4`) Works on `sglang-torchtpu` and `vllm-tpu`, But Not on `vllm-torchtpu`**:
-   - `gpt_oss_mxfp4` is a 4-bit microscaling format (`32`-element `E2M1` blocks with `E8M0` shared scales) created by OpenAI for GPU/CUDA Triton kernels.
-   - Ironwood TPU (`v7x`) Matrix Multiply Units (MXUs) execute natively in **BF16 (`2,307 TFLOPs/chip`)** and **FP8 (`4,614 TFLOPs/chip`)** (native hardware FP4 MXU arrives in TPU v8).
-   - **`sglang-torchtpu`** and **`vllm-tpu` (JAX)** implement custom Pallas TPU kernels that unpack the 4-bit `mxfp4` weights on the fly inside the TPU Vector Processing Unit (VPU) into BF16/FP8 registers right before feeding the MXU.
-   - Upstream **`vllm-torchtpu`** has not yet registered a TPU kernel in `vllm/model_executor/layers/quantization/mxfp4.py` and immediately raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`.
-2. **Why `lmsys/gpt-oss-120b-bf16` (Native BF16) Needed a Lightweight Load-Time Patch on `vllm-torchtpu` and `sglang-torchtpu`**:
-   - TPU MXUs and Pallas grouped-matmul (`gmm_v2`) MoE kernels require matrix dimensions to be exact multiples of **`128`**.
-   - While most LLMs use a `hidden_size` divisible by `128`, **`GPT-OSS 120B` has `hidden_size = 2880` (`22.5 × 128`, leaving a remainder of `64` columns)**.
-   - In `vllm-torchtpu`'s `VllmUnquantizedFusedMoEMethod`, upstream padded `intermediate_size` to a multiple of `128`, **but forgot to pad `hidden_size` (`2880 -> 2944`, `+64` zero columns)**. Without that 6-line load-time padding ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py)), Pallas `gmm_v2` reads `64` uninitialized trailing lanes per row (`18.8 ms` TPOT); with the load-time padding, **`vllm-torchtpu` decode latency drops `3.2x` to `5.30–5.95 ms` TPOT (`2,284.8` out tok/s on `1k/1k`)**.
-   - Similarly, on `sglang-torchtpu`, [`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py) maps standard Hugging Face BF16 expert tensor names (`gate_up_proj`, `down_proj`), deinterleaves OpenAI's interleaved `swigluoai` gate/up channels (`[::2]` and `[1::2]`), and pads `2880 -> 2944` once at load time, achieving **`739.5 ms` TTFT on `22k` input, `4.97 ms` TPOT, and `5,084.5` out tok/s across 2 hosts (`8` chips)**.
+1. **`vllm-tpu` (JAX / `tpu-inference`)**:
+   - Runs natively at `TP=8, --enable-expert-parallel` with both `bfloat16` (`--kv-cache-dtype=auto`) and `fp8` (`--kv-cache-dtype=fp8`) KV caches.
+   - High concurrency throughput leader: sustains **`5,567.6 tok/s`** on `1k/1k` (2 hosts) and **`2,540.3 tok/s`** (1 host).
+2. **`vllm-torchtpu` (PyTorch / XLA with `scripts/patches/apply_vllm_torchtpu_bf16_patches.py`)**:
+   - Upstream unquantized MoE reads non-128-aligned `hidden_size = 2880`. The runtime patch pads `hidden_size` (`2880 -> 2944`, multiple of 128) on `w13_weight`, `w2_weight`, and `w2_bias` in `VllmUnquantizedFusedMoEMethod.process_weights_after_loading`.
+   - **Performance Impact**: Eliminates Pallas out-of-bounds lane reads, dropping single-stream decode TPOT **`3.2x` from `18.8 ms` down to `5.49–5.95 ms`** (`182 tok/s` per stream).
+3. **`sglang-torchtpu` (PyTorch / Pallas with `scripts/patches/apply_sglang_bf16_patches.py`)**:
+   - Upstream SGLang expects fused expert tensors transposed and deinterleaved. The runtime patch maps `gate_up_proj` and `down_proj`, transposes `[-2, -1]` to match `FusedMoE`, and deinterleaves `swigluoai` gate/up channels (`::2`, `1::2`) prior to 128-boundary tile padding.
+   - **Latency Champion**: Achieves the fastest single-stream decode (**`4.97 ms` TPOT**, `201.2 tok/s` per stream) and fastest prefill (**`739.5 ms` TTFT** for `22,000` tokens).
+4. **`sglang-torchtpu` + `EAGLE3` Speculative Decoding**:
+   - Evaluates `lmsys/EAGLE3-gpt-oss-120b-bf16` speculative decoding draft head (`steps=3, draft=4`). Delivers `5.48 ms` single-stream TPOT and `762.8 ms` TTFT.
 
 ### 4.2 Cross-Stack Benchmark Comparison on 1 Host (`4` Chips / `8` TensorCores)
 
@@ -93,9 +88,11 @@ All configurations run on `1 Host = 4 Chips` (`tpu7x-standard-4t`, `768 GB` HBM3
 | **`vllm-tpu` (JAX, BF16 KV)** | `880.5 ms` | `8.54 ms` | `35.0 s` | `1,249.9` | **`40.6 ms`** / `8.21 ms` | `2,463.7` | `1,557.4` |
 | **`vllm-tpu` (JAX, FP8 KV)** | `880.3 ms` | `8.48 ms` | `34.8 s` | **`1,302.6`** | `41.1 ms` / `8.26 ms` | **`2,540.3`** | `1,582.9` |
 
-### 4.3 Dual-Host (`2 Hosts = 8 Chips`) SGLang BF16 Horizontal Scaling Analysis
+### 4.3 Dual-Host (`2 Hosts = 8 Chips`) Native BF16 Horizontal Scaling Analysis
 
 Across `2 Hosts = 8 Chips` (`v7x-bf16-rqkr` + `v7x-bf16-xq6s`, `1.54 TB` aggregate HBM3e) fronted by `scripts/lb_proxy.py`:
+
+#### A. SGLang-TorchTPU (2x TP=8, EP=8 Replicas)
 
 | Workload (`ISL : OSL`) | Metric | `1 Host` (`4` Chips) | `2 Hosts` (`8` Chips) | Scaling Factor (`2-Host` vs `1-Host`) |
 |---|---|---:|---:|---:|
@@ -105,7 +102,19 @@ Across `2 Hosts = 8 Chips` (`v7x-bf16-rqkr` + `v7x-bf16-xq6s`, `1.54 TB` aggrega
 | **`8,192 : 1,024`** | Total Throughput (`tok/s`) | `14,670.9` | **`29,528.8`** | **`2.01x`** |
 | **`22,000 : 4,000`** | Closed-Loop Peak Out tok/s | `1,150.1` (`CON=16`) | **`2,433.8`** (`CON=32`) | **`2.12x`** (Superlinear Scaling) |
 | **`22,000 : 4,000`** | Open-Loop `6.0 RPS` Out tok/s | `1,225.5` (`RPS=2.0`) | **`2,193.4`** (`RPS=6.0`) | **`1.79x`** |
-| **`22,000 : 4,000`** | Single-Stream `CON=1` Latency | `739.5 ms` TTFT / `4.97 ms` TPOT | `771.4 ms` TTFT / `5.05 ms` TPOT | Identical Sub-5ms Decode via Proxy |
+| **`22,000 : 4,000`** | Single-Stream `CON=1` Latency | `739.5 ms` TTFT / `4.97 ms` TPOT | `771.4 ms` TTFT / `5.05 ms` TPOT | Sub-5ms Decode Preserved via Proxy |
+
+#### B. vLLM-TPU (2x TP=8, EP=true Replicas)
+
+| Workload (`ISL : OSL`) | Metric | `1 Host` (`4` Chips) | `2 Hosts` (`8` Chips) | Scaling Factor (`2-Host` vs `1-Host`) |
+|---|---|---:|---:|---:|
+| **`1,024 : 1,024`** | Output Throughput (`tok/s`) | `2,463.7` (`CON=32`) | **`5,567.6`** (`CON=128`) | **`2.26x`** (Superlinear Scaling) |
+| **`1,024 : 1,024`** | Total Throughput (`tok/s`) | `4,927.4` | **`11,135.2`** | **`2.26x`** |
+| **`8,192 : 1,024`** | Output Throughput (`tok/s`) | `1,557.4` (`CON=32`) | **`2,814.4`** (`CON=128`) | **`1.81x`** |
+| **`8,192 : 1,024`** | Total Throughput (`tok/s`) | `14,016.6` | **`25,329.7`** | **`1.81x`** |
+| **`22,000 : 4,000`** | Closed-Loop Peak Out tok/s | `1,249.9` (`CON=32`) | **`1,460.5`** (`CON=64`) | **`1.17x`** |
+| **`22,000 : 4,000`** | Open-Loop `6.0 RPS` Out tok/s | `1,434.3` (`RPS=4.0`) | **`1,507.1`** (`RPS=6.0`) | **`1.05x`** |
+| **`22,000 : 4,000`** | Single-Stream `CON=1` Latency | `880.5 ms` TTFT / `8.54 ms` TPOT | `882.6 ms` TTFT / `5.99 ms` TPOT | Single-Stream Decode Speedup |
 
 ### 4.4 Native BF16 (`234 GB`) vs Native MXFP4 (`65 GB`) Architectural Comparison
 
@@ -115,6 +124,7 @@ Across `2 Hosts = 8 Chips` (`v7x-bf16-rqkr` + `v7x-bf16-xq6s`, `1.54 TB` aggrega
 | **Best 1-Host `22k/4k` Single-Stream TPOT** | **`4.09 ms`** (`sglang-torchtpu`) | **`4.97 ms`** (`sglang-torchtpu`) | Native BF16 within `21%` decode speed of MXFP4 due to Ironwood `7.4 TB/s` HBM3e |
 | **Best 1-Host `22k/4k` Single-Stream TTFT** | **`737.0 ms`** (`sglang-torchtpu`) | **`739.5 ms`** (`sglang-torchtpu`) | Prefill is matrix-multiply compute bound: **identical TTFT** (`< 0.4%` delta) |
 | **Best 1-Host `1k/1k` Peak Out tok/s** | **`5,847.0`** (`vllm-tpu` `TP=2, DP=4`) | **`2,540.3`** (`vllm-tpu` `TP=8, EP=true`) | MXFP4 allows `4x` DP ranks on 1 Host; BF16 runs `TP=8` full-host sharding |
+| **Best 2-Host `1k/1k` Peak Out tok/s** | **`14,277.1`** (`vllm-tpu` `2x TP=2, DP=4`) | **`5,567.6`** (`vllm-tpu` `2x TP=8, EP=true`) | Superlinear 2-host scaling across both precisions |
 | **Best 1-Host `22k/4k` Peak Out tok/s** | **`1,789.4`** (`vllm-tpu` `TP=2, DP=4`) | **`1,302.6`** (`vllm-tpu` `TP=8, EP=true`) | BF16 delivers `72.8%` of MXFP4 closed-loop throughput on long context |
 
 ---
@@ -442,4 +452,33 @@ Generating `4,000` tokens per request at `6.0 RPS` requires sustaining **`24,000
 | `ref_8k1k` | `8,192 : 1,024` | `CON=32` | `96` | `2.417` | `0.000` | **`2,475.2`** | **`309.4`** | `22,276.5` | `1,521.0 / 3,080.4 / 3,514.9` | `11.33 / 12.48 / 12.66` | `9.48 / 10.01` | `13.19 / 14.00` | Partial (E2E) |
 | `ref_8k1k` | `8,192 : 1,024` | `CON=64` | `128` | `3.155` | `0.000` | **`3,230.7`** | **`403.8`** | `29,076.1` | `2,551.3 / 6,397.8 / 7,003.6` | `17.23 / 18.92 / 19.29` | `12.91 / 13.78` | `19.97 / 23.90` | Partial (E2E) |
 | `ref_8k1k` | `8,192 : 1,024` | `CON=128` | `256` | `3.204` | `0.000` | **`3,281.0`** | **`410.1`** | `29,528.8` | `20,534.9 / 25,771.4 / 26,889.7` | `18.56 / 19.00 / 19.21` | `12.85 / 13.57` | `39.58 / 45.05` | Partial (E2E) |
+
+
+### `gptoss120b_bf16_2h_8c_vllmtpu_bf16kv_tp8ep`
+- **Model**: `lmsys/gpt-oss-120b-bf16` | **Framework**: `vllm-tpu (2x single-host replicas + least_conn LB)`
+- **Precision**: `native bf16 weights (234 GB), bf16 kv` | **Topology**: `2 hosts (8 chips / 16 TensorCores), 2x independent TP=8 EP=true replicas` (`8` physical `tpu7x` chips)
+
+| Suite | ISL : OSL | Load | Done | Req/s | Goodput (req/s) | Out tok/s | Out tok/s/chip | Total tok/s | TTFT P50 / P95 / P99 (ms) | TPOT P50 / P95 / P99 (ms) | ITL P50 / P95 (ms) | E2E P50 / P95 (s) | SLA Status (P95) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `smoke` | `1,024 : 21` | `CON=1` | `32` | `2.872` | `2.692` | **`60.3`** | **`7.5`** | `3,001.1` | `46.4 / 1,355.1 / 3,003.1` | `5.49 / 6.25 / 12.82` | `5.41 / 6.12` | `0.16 / 1.54` | Partial (TPOT+E2E) |
+| `smoke` | `1,024 : 21` | `CON=8` | `64` | `27.405` | `20.554` | **`575.5`** | **`71.9`** | `28,638.4` | `147.4 / 275.5 / 276.7` | `6.14 / 10.98 / 16.93` | `6.20 / 6.95` | `0.27 / 0.44` | Partial (TTFT+E2E) |
+| `smoke` | `1,024 : 21` | `CON=32` | `128` | `20.956` | `0.982` | **`440.1`** | **`55.0`** | `21,898.9` | `450.7 / 3,039.0 / 3,560.0` | `14.58 / 53.56 / 152.76` | `8.64 / 100.43` | `0.74 / 3.96` | Partial (E2E) |
+| `long_cl` | `22,000 : 4,000` | `CON=1` | `10` | `0.040` | `0.000` | **`160.7`** | **`20.1`** | `1,044.4` | `882.6 / 889.0 / 890.2` | `5.99 / 6.05 / 6.05` | `5.96 / 6.15` | `24.85 / 25.06` | Partial (TPOT+E2E) |
+| `long_cl` | `22,000 : 4,000` | `CON=6` | `48` | `0.169` | `0.000` | **`677.7`** | **`84.7`** | `4,405.3` | `1,883.7 / 2,444.2 / 2,457.5` | `8.38 / 8.66 / 8.72` | `8.23 / 8.57` | `35.40 / 35.75` | Partial (TPOT+E2E) |
+| `long_cl` | `22,000 : 4,000` | `CON=16` | `64` | `0.272` | `0.000` | **`1,087.8`** | **`136.0`** | `7,070.8` | `3,869.1 / 5,889.9 / 6,230.6` | `13.71 / 14.49 / 14.56` | `13.14 / 13.91` | `58.56 / 59.39` | Partial (E2E) |
+| `long_cl` | `22,000 : 4,000` | `CON=32` | `64` | `0.338` | `0.000` | **`1,351.0`** | **`168.9`** | `8,781.8` | `4,021.7 / 11,656.0 / 12,539.7` | `22.61 / 23.31 / 23.44` | `20.59 / 21.93` | `94.65 / 101.95` | Above SLA |
+| `long_cl` | `22,000 : 4,000` | `CON=64` | `96` | `0.365` | `0.000` | **`1,460.5`** | **`182.6`** | `9,493.0` | `6,831.1 / 25,620.2 / 27,311.1` | `39.87 / 41.33 / 41.71` | `34.61 / 37.37` | `171.87 / 181.00` | Above SLA |
+| `long_ol` | `22,000 : 4,000` | `RPS=0.5` | `36` | `0.266` | `0.000` | **`1,062.8`** | **`132.8`** | `6,908.2` | `902.6 / 1,009.2 / 1,192.2` | `19.50 / 21.13 / 21.34` | `18.48 / 22.65` | `78.90 / 85.40` | Above SLA |
+| `long_ol` | `22,000 : 4,000` | `RPS=1.0` | `48` | `0.325` | `0.000` | **`1,300.1`** | **`162.5`** | `8,450.6` | `916.1 / 1,310.7 / 1,417.8` | `27.69 / 29.24 / 29.43` | `27.78 / 29.44` | `111.63 / 118.14` | Above SLA |
+| `long_ol` | `22,000 : 4,000` | `RPS=2.0` | `56` | `0.363` | `0.000` | **`1,453.0`** | **`181.6`** | `9,444.5` | `1,729.4 / 3,408.6 / 3,673.2` | `34.31 / 36.09 / 36.27` | `32.04 / 33.86` | `140.12 / 145.33` | Above SLA |
+| `long_ol` | `22,000 : 4,000` | `RPS=4.0` | `60` | `0.378` | `0.000` | **`1,511.4`** | **`188.9`** | `9,824.4` | `6,224.4 / 9,157.1 / 9,615.1` | `36.31 / 38.68 / 38.92` | `33.62 / 35.61` | `151.68 / 156.16` | Above SLA |
+| `long_ol` | `22,000 : 4,000` | `RPS=6.0` | `60` | `0.377` | `0.000` | **`1,507.1`** | **`188.4`** | `9,796.1` | `8,131.9 / 13,399.7 / 14,055.6` | `36.53 / 38.96 / 39.26` | `33.86 / 35.71` | `154.13 / 157.50` | Above SLA |
+| `ref_1k1k` | `1,024 : 1,024` | `CON=8` | `64` | `1.151` | `1.151` | **`1,178.5`** | **`147.3`** | `2,357.0` | `148.5 / 160.9 / 163.2` | `6.63 / 6.75 / 6.79` | `6.57 / 6.87` | `6.93 / 7.02` | PASS (All) |
+| `ref_1k1k` | `1,024 : 1,024` | `CON=32` | `128` | `3.113` | `2.967` | **`3,188.0`** | **`398.5`** | `6,376.1` | `378.4 / 466.4 / 565.6` | `9.65 / 9.87 / 10.00` | `9.56 / 10.12` | `10.27 / 10.32` | PASS (All) |
+| `ref_1k1k` | `1,024 : 1,024` | `CON=64` | `192` | `4.333` | `0.000` | **`4,437.3`** | **`554.7`** | `8,874.7` | `653.6 / 937.8 / 949.8` | `13.85 / 14.28 / 14.35` | `13.53 / 14.31` | `14.71 / 15.12` | Partial (E2E) |
+| `ref_1k1k` | `1,024 : 1,024` | `CON=128` | `256` | `5.437` | `0.000` | **`5,567.6`** | **`696.0`** | `11,135.2` | `958.5 / 4,011.6 / 4,027.7` | `20.91 / 23.78 / 23.88` | `20.21 / 21.67` | `23.38 / 25.31` | Partial (E2E) |
+| `ref_8k1k` | `8,192 : 1,024` | `CON=8` | `48` | `0.942` | `0.235` | **`964.6`** | **`120.6`** | `8,681.1` | `769.2 / 940.6 / 943.0` | `7.54 / 8.09 / 8.15` | `7.35 / 7.82` | `8.46 / 8.59` | Partial (TPOT+E2E) |
+| `ref_8k1k` | `8,192 : 1,024` | `CON=32` | `96` | `1.942` | `0.000` | **`1,988.8`** | **`248.6`** | `17,899.4` | `1,796.7 / 2,897.3 / 3,215.0` | `14.36 / 15.62 / 15.77` | `12.82 / 14.36` | `16.43 / 17.58` | Partial (E2E) |
+| `ref_8k1k` | `8,192 : 1,024` | `CON=64` | `128` | `2.393` | `0.000` | **`2,450.3`** | **`306.3`** | `22,052.6` | `1,914.9 / 5,960.2 / 6,308.9` | `24.41 / 25.26 / 25.70` | `19.80 / 22.98` | `26.65 / 30.93` | Partial (E2E) |
+| `ref_8k1k` | `8,192 : 1,024` | `CON=128` | `256` | `2.748` | `0.000` | **`2,814.4`** | **`351.8`** | `25,329.7` | `2,002.3 / 11,546.0 / 12,653.7` | `43.73 / 44.08 / 44.67` | `33.00 / 39.29` | `46.20 / 56.58` | Partial (E2E) |
 

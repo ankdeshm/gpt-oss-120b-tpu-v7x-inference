@@ -38,17 +38,17 @@ Before launching your benchmarks, it is helpful to understand the two official c
 | Serving Stack | `openai/gpt-oss-120b` (`65.3 GB` Native MXFP4) | `lmsys/gpt-oss-120b-bf16` (`233.7 GB` Pure Unquantized BF16) | Recommended Use Case on Ironwood TPU (`v7x`) |
 |---|---|---|---|
 | **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Supported Out-of-the-Box** (`TP=8, EP=8`; VPU unpacks 4-bit MXFP4 -> BF16/FP8 MXU)<br>**`737.0 ms` TTFT**, **`4.09 ms` TPOT** | **Supported via Load-Time Patch** ([`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py))<br>**`739.5 ms` TTFT**, **`4.97 ms` TPOT**, **`5,084.5` tok/s** (2 hosts) | **#1 Lowest Latency (`TTFT` & `TPOT`)** on both MXFP4 and Native BF16 within the PyTorch/TorchTPU ecosystem |
-| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds CUDA/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`877.1 ms` TTFT**, **`5.30–5.95 ms` TPOT**, **`2,284.8` tok/s** (1 host) | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (`3.2x` decode speedup with 128-tile alignment patch) |
+| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds GPU/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`877.1 ms` TTFT**, **`5.30–5.95 ms` TPOT**, **`2,284.8` tok/s** (1 host) | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (`3.2x` decode speedup with 128-tile alignment patch) |
 | **`vllm-tpu`** *(JAX `tpu-inference`)* | **Supported Out-of-the-Box** (`TP=2, DP=4` per host; 4 data-parallel replicas/host)<br>**`5,847.0` tok/s** (1h) -> **`20,366.9` tok/s** (4h) | **Supported Out-of-the-Box (Zero Patches)** (`TP=8, --enable-expert-parallel`)<br>**`880.3 ms` TTFT**, **`8.21–8.48 ms` TPOT**, **`2,540.3` tok/s** (1 host) | **#1 Highest Multi-Host Throughput** (`TP=2, DP=4` on MXFP4) and zero-patch turnkey BF16 serving |
 
 ### 2.2 FAQ 1: Why does `openai/gpt-oss-120b` (Native MXFP4) work on `sglang-torchtpu` and `vllm-tpu`, but not on `vllm-torchtpu`?
-1. **What `gpt_oss_mxfp4` Is**: OpenAI released `openai/gpt-oss-120b` (`~65.3 GB`) with its routed MoE expert weights quantized in **`gpt_oss_mxfp4`** — a 4-bit microscaling format (`32`-element `E2M1` blocks sharing an 8-bit `E8M0` exponent scale) originally written for GPU/CUDA Triton kernels.
+1. **What `gpt_oss_mxfp4` Is**: OpenAI released `openai/gpt-oss-120b` (`~65.3 GB`) with its routed MoE expert weights quantized in **`gpt_oss_mxfp4`** — a 4-bit microscaling format (`32`-element `E2M1` blocks sharing an 8-bit `E8M0` exponent scale) originally written for GPU Triton kernels.
 2. **How Ironwood TPU (`v7x`) Hardware Executes It**:
    - Ironwood (`v7x`) Matrix Multiply Units (MXUs) execute natively in **BF16 (`2,307 TFLOPs/chip`)** and **FP8 (`4,614 TFLOPs/chip`)** (native hardware FP4 MXU arrives in TPU v8).
    - **`sglang-torchtpu`** and **`vllm-tpu` (JAX)** implemented custom Pallas TPU kernels that **unpack the 4-bit `mxfp4` weights on the fly inside the TPU Vector Processing Unit (VPU)** into BF16/FP8 registers right before feeding the MXU.
    - That is why **`sglang-torchtpu`** runs `openai/gpt-oss-120b` natively (`TP=8, EP=8`) at **`737.0 ms` TTFT** and **`4.09 ms` TPOT**, and **`vllm-tpu` (JAX)** runs `4` data-parallel replicas per host (`TP=2, DP=4`) at **`5,847.0` out tok/s** (`1` host), **`14,277.1` out tok/s** (`2` hosts), and **`20,366.9` out tok/s** (`4` hosts).
 3. **Why `vllm-torchtpu` Doesn't Have MXFP4 Numbers**:
-   - In upstream **`vllm-torchtpu`**, `vllm/model_executor/layers/quantization/mxfp4.py` only registers CUDA/ROCm Triton kernels and has not wired up a TorchTPU Pallas VPU-unpacking kernel for `gpt_oss_mxfp4` yet — so launching `openai/gpt-oss-120b` on `vllm-torchtpu` immediately raises:
+   - In upstream **`vllm-torchtpu`**, `vllm/model_executor/layers/quantization/mxfp4.py` only registers GPU/ROCm Triton kernels and has not wired up a TorchTPU Pallas VPU-unpacking kernel for `gpt_oss_mxfp4` yet — so launching `openai/gpt-oss-120b` on `vllm-torchtpu` immediately raises:
      ```text
      ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu.
      ```
@@ -259,7 +259,7 @@ gcloud container node-pools create cpu-bench-pool \
 
 ### Step 6.4: Verify TPU Node Pool Readiness
 ```bash
-kubectl get nodes -L cloud.google.com/gke-tpu-accelerator,cloud.google.com/gke-tpu-topology
+kubectl get nodes -L cloud.google.com/tpu-accelerator,cloud.google.com/tpu-topology
 ```
 Each `tpu7x-standard-4t` node will report `google.com/tpu: 4` (`4` physical Ironwood chips = `8` TensorCores).
 

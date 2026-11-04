@@ -17,12 +17,12 @@ This directory contains the lightweight startup scripts (`apply_vllm_torchtpu_bf
 ## 2. Why Does `openai/gpt-oss-120b` (Native MXFP4) Work on `sglang-torchtpu` and `vllm-tpu`, But Not on `vllm-torchtpu`?
 
 1. **What `gpt_oss_mxfp4` Is**:
-   - OpenAI released `openai/gpt-oss-120b` with its `128` routed Mixture-of-Experts (MoE) weights quantized in **`gpt_oss_mxfp4`** — a 4-bit microscaling format where every block of `32` elements is stored as 4-bit `E2M1` values accompanied by a shared 8-bit `E8M0` exponent scale, designed around GPU/CUDA Triton kernels.
+   - OpenAI released `openai/gpt-oss-120b` with its `128` routed Mixture-of-Experts (MoE) weights quantized in **`gpt_oss_mxfp4`** — a 4-bit microscaling format where every block of `32` elements is stored as 4-bit `E2M1` values accompanied by a shared 8-bit `E8M0` exponent scale, designed around GPU Triton kernels.
 2. **How Ironwood TPU (`v7x`) Executes It**:
    - Ironwood (`v7x`) Matrix Multiply Units (MXUs) execute natively in **BF16 (`2,307 TFLOPs/chip`)** and **FP8 (`4,614 TFLOPs/chip`)** (native hardware FP4 MXU arrives in TPU v8).
    - **`sglang-torchtpu`** and **`vllm-tpu` (JAX)** include custom Pallas TPU kernels that keep the weights compressed as 4-bit `mxfp4` in HBM3e (`65.3 GB` total) and **unpack the 4-bit blocks + `E8M0` scales on the fly inside the TPU Vector Processing Unit (VPU)** into BF16/FP8 registers right before feeding the MXU.
 3. **Why Upstream `vllm-torchtpu` Raises an Error on MXFP4**:
-   - In upstream `vllm-torchtpu`, `vllm/model_executor/layers/quantization/mxfp4.py` only registers CUDA/ROCm Triton kernels and has not yet registered a TPU backend kernel for `gpt_oss_mxfp4`, raising:
+   - In upstream `vllm-torchtpu`, `vllm/model_executor/layers/quantization/mxfp4.py` only registers GPU/ROCm Triton kernels and has not yet registered a TPU backend kernel for `gpt_oss_mxfp4`, raising:
      ```text
      ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu.
      ```

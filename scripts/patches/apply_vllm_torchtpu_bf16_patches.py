@@ -102,7 +102,29 @@ def patch_torchtpu_unquantized() -> None:
     print(f"[ok] Patched {path}")
 
 
+def patch_vllm_openai_tool_parser() -> None:
+    try:
+        import vllm.tool_parsers.utils as utils_mod
+        path = Path(utils_mod.__file__)
+        src = path.read_text()
+        if "class NamespaceTool:" in src:
+            print(f"[skip] {path} already patched")
+            return
+        old = "from openai.types.responses import (\n    CustomTool,\n    FunctionTool,\n    NamespaceTool,\n    ToolChoiceCustom,\n    ToolChoiceFunction,\n)"
+        new = "from openai.types.responses import (\n    CustomTool,\n    FunctionTool,\n    ToolChoiceCustom,\n    ToolChoiceFunction,\n)\ntry:\n    from openai.types.responses import NamespaceTool\nexcept ImportError:\n    class NamespaceTool:\n        pass"
+        if old not in src:
+            print(f"[skip] {path} anchor not matched")
+            return
+        src = src.replace(old, new, 1)
+        path.write_text(src)
+        print(f"[ok] Patched {path}")
+    except Exception as exc:
+        print(f"[warn] {exc}")
+
+
 if __name__ == "__main__":
+    patch_vllm_openai_tool_parser()
     patch_vllm_gpt_oss()
     patch_torchtpu_attention()
     patch_torchtpu_unquantized()
+

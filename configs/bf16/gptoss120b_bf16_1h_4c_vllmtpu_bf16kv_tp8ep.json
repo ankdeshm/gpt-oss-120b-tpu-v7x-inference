@@ -31,7 +31,8 @@
     "VLLM_XLA_CACHE_PATH": "/models/xla-cache/vllmtpu-bf16-shared",
     "HF_HUB_OFFLINE": "1",
     "TRANSFORMERS_OFFLINE": "1",
-    "MOE_TC_PERMUTE": "1"
+    "MOE_TC_PERMUTE": "1",
+    "USE_MOE_SPARSE_CORE": "0"
   },
   "argv": [
     "python3",

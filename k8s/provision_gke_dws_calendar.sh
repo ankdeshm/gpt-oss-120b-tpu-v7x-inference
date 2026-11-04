@@ -146,4 +146,4 @@ if ! gcloud container node-pools describe cpu-bench-pool --cluster="${CLUSTER_NA
 fi
 
 echo "Done! Verify your TPU nodes with:"
-echo "  kubectl get nodes -L cloud.google.com/gke-tpu-accelerator,cloud.google.com/gke-tpu-topology"
+echo "  kubectl get nodes -L cloud.google.com/tpu-accelerator,cloud.google.com/tpu-topology"
