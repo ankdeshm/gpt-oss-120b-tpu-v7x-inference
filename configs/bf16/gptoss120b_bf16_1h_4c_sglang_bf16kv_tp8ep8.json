@@ -1,0 +1,189 @@
+{
+  "name": "gptoss120b_bf16_1h_4c_sglang_bf16kv_tp8ep8",
+  "model_family": "lmsys/gpt-oss-120b-bf16",
+  "framework": "sglang-torchtpu",
+  "precision": "native bf16 weights (234 GB), bf16 kv",
+  "topology": "1 host (4 chips / 8 TensorCores), TP=8, EP=8",
+  "hosts": 1,
+  "chips": 4,
+  "port": 8000,
+  "ready_timeout_s": 3600,
+  "keep_server_alive": false,
+  "tpu_env_mode": "sglang_single_host",
+  "served_model": "openai/gpt-oss-120b",
+  "tokenizer_dir": "/dev/shm/models/gpt-oss-120b-bf16",
+  "stage": [
+    {
+      "src": "/models/models/lmsys/gpt-oss-120b-bf16",
+      "dst": "/dev/shm/models/gpt-oss-120b-bf16"
+    },
+    {
+      "src": "/models/models/lmsys/EAGLE3-gpt-oss-120b-bf16",
+      "dst": "/dev/shm/models/EAGLE3-gpt-oss-120b-bf16"
+    }
+  ],
+  "mkdirs": [
+    "/dev/shm/torch_tpu_tier3"
+  ],
+  "env": {
+    "MODEL": "/dev/shm/models/gpt-oss-120b-bf16",
+    "HOST": "0.0.0.0",
+    "PORT": "8000",
+    "TP_SIZE": "8",
+    "EP_SIZE": "8",
+    "QUANTIZATION": "",
+    "KV_CACHE_DTYPE": "bfloat16",
+    "ATTENTION_BACKEND": "pallas_tpu_rpa_v3",
+    "PAGE_SIZE": "64",
+    "CONTEXT_LEN": "32768",
+    "CHUNKED_PREFILL_SIZE": "8192",
+    "MAX_PREFILL_TOKENS": "8192",
+    "MAX_TOTAL_TOKENS": "524288",
+    "MEM_FRACTION_STATIC": "0.74",
+    "CONC": "32",
+    "MAX_RUNNING": "32",
+    "TORCH_COMPILE_MAX_BS": "32",
+    "TPU_COMPILE_BS": "1 2 4 6 8 16 32",
+    "TPU_COMPILE_TOKENS": "512 2048 4096 8192",
+    "DISABLE_RADIX_CACHE": "1",
+    "ENABLE_TORCH_COMPILE": "1",
+    "ENABLE_METRICS": "1",
+    "SGLANG_TPU_FUSED_MOE_SC_GATHER": "0",
+    "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS": "false",
+    "TORCH_TPU_TIER3_ROOT": "/dev/shm/torch_tpu_tier3",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "DUMP_META": "0",
+    "EXTRA_ARGS": "--tpu-compile-tracer direct --served-model-name openai/gpt-oss-120b --reasoning-parser gpt-oss --watchdog-timeout 7200"
+  },
+  "argv": [
+    "bash",
+    "/workspace/sglang/benchmark/tpu/launch_server.sh"
+  ],
+  "cells": [
+    {
+      "suite": "smoke",
+      "isl": 1024,
+      "osl": 21,
+      "concurrency": 1,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "smoke",
+      "isl": 1024,
+      "osl": 21,
+      "concurrency": 8,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 1,
+      "num_prompts": 12,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 6,
+      "num_prompts": 30,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 16,
+      "num_prompts": 36,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 32,
+      "num_prompts": 48,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 0.5,
+      "num_prompts": 28
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 1.0,
+      "num_prompts": 36
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 2.0,
+      "num_prompts": 36
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 4.0,
+      "num_prompts": 40
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 1,
+      "num_prompts": 24,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 8,
+      "num_prompts": 48,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 32,
+      "num_prompts": 96,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 1,
+      "num_prompts": 20,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 8,
+      "num_prompts": 40,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 32,
+      "num_prompts": 64,
+      "rps": "inf"
+    }
+  ]
+}

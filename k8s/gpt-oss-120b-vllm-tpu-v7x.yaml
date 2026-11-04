@@ -61,8 +61,8 @@ spec:
         gke-gcsfuse/ephemeral-storage-limit: "0"
     spec:
       nodeSelector:
-        cloud.google.com/gke-tpu-accelerator: tpu7x
-        cloud.google.com/gke-tpu-topology: 2x2x1
+        cloud.google.com/tpu-accelerator: tpu7x
+        cloud.google.com/tpu-topology: 2x2x1
       tolerations:
         - key: google.com/tpu
           operator: Exists

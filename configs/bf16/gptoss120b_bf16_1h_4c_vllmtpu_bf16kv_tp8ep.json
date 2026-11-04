@@ -1,0 +1,184 @@
+{
+  "name": "gptoss120b_bf16_1h_4c_vllmtpu_bf16kv_tp8ep",
+  "model_family": "lmsys/gpt-oss-120b-bf16",
+  "framework": "vllm-tpu (JAX / tpu-inference)",
+  "precision": "native bf16 weights (234 GB), bf16 kv",
+  "topology": "1 host (4 chips / 8 TensorCores), TP=8, DP=1, EP=true",
+  "hosts": 1,
+  "chips": 4,
+  "port": 8000,
+  "ready_timeout_s": 5400,
+  "keep_server_alive": false,
+  "tpu_env_mode": "gke_single_host",
+  "served_model": "openai/gpt-oss-120b",
+  "tokenizer_dir": "/dev/shm/models/gpt-oss-120b-bf16",
+  "stage": [
+    {
+      "src": "/models/models/lmsys/gpt-oss-120b-bf16",
+      "dst": "/dev/shm/models/gpt-oss-120b-bf16"
+    }
+  ],
+  "mkdirs": [
+    "/models/xla-cache/vllm-tpu-gptoss-bf16w-bf16kv-tp8ep"
+  ],
+  "env": {
+    "TPU_BACKEND_TYPE": "jax",
+    "MODEL_IMPL_TYPE": "vllm",
+    "USE_BATCHED_RPA_KERNEL": "1",
+    "JAX_GC_POST_COMPILE": "true",
+    "JAX_THREE_PHASE_DEALLOCATION": "true",
+    "VLLM_ENGINE_READY_TIMEOUT_S": "7200",
+    "VLLM_XLA_CACHE_PATH": "/models/xla-cache/vllmtpu-bf16-shared",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "MOE_TC_PERMUTE": "1"
+  },
+  "argv": [
+    "python3",
+    "-m",
+    "vllm.entrypoints.openai.api_server",
+    "--host=0.0.0.0",
+    "--port=8000",
+    "--model=/dev/shm/models/gpt-oss-120b-bf16",
+    "--served-model-name=openai/gpt-oss-120b",
+    "--dtype=bfloat16",
+    "--tensor-parallel-size=8",
+    "--data-parallel-size=1",
+    "--enable-expert-parallel",
+    "--max-model-len=32768",
+    "--max-num-batched-tokens=16384",
+    "--max-num-seqs=64",
+    "--enable-chunked-prefill",
+    "--no-enable-prefix-caching",
+    "--trust-remote-code",
+    "--kv-cache-dtype=auto",
+    "--async-scheduling",
+    "--gpu-memory-utilization=0.86"
+  ],
+  "cells": [
+    {
+      "suite": "smoke",
+      "isl": 1024,
+      "osl": 21,
+      "concurrency": 1,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "smoke",
+      "isl": 1024,
+      "osl": 21,
+      "concurrency": 8,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 1,
+      "num_prompts": 12,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 6,
+      "num_prompts": 30,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 16,
+      "num_prompts": 36,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 32,
+      "num_prompts": 48,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 0.5,
+      "num_prompts": 28
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 1.0,
+      "num_prompts": 36
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 2.0,
+      "num_prompts": 36
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 4.0,
+      "num_prompts": 40
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 1,
+      "num_prompts": 24,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 8,
+      "num_prompts": 48,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 32,
+      "num_prompts": 96,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 1,
+      "num_prompts": 20,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 8,
+      "num_prompts": 40,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 32,
+      "num_prompts": 64,
+      "rps": "inf"
+    }
+  ]
+}
