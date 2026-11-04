@@ -12,9 +12,11 @@ Production-ready inference recipes, **GKE + DWS Calendar Mode reservation** prov
 | Attribute | Ironwood TPU (`tpu7x`) Specification |
 |---|---|
 | **Single Host (`tpu7x-standard-4t`)** | `4` physical Ironwood chips (`2x2x1` ICI mesh) = `8` TensorCores + SparseCores |
-| **HBM Capacity & Bandwidth** | `192 GB` HBM3e per chip (`768 GB` HBM3e per 4-chip host) @ `7.4 TB/s` per chip |
+| **HBM Capacity & Bandwidth** | `192 GB` HBM3e per chip (`768 GB` HBM3e per 4-chip host) @ `7.4 TB/s` per chip (`29.6 TB/s` per host) |
+| **Compute per Chip (BF16 / FP8)** | `2,307 TFLOPs` BF16 / `4,614 TFLOPs` FP8 per chip (`9.23 PFLOPs` BF16 / `18.46 PFLOPs` FP8 per 4-chip host) |
 | **2-Host Deployment (`8` Chips)** | `2 × tpu7x-standard-4t` (`2x2x2` WorkloadPolicy, `16` TensorCores, `1.54 TB` HBM3e) |
 | **4-Host Deployment (`16` Chips)** | `4 × tpu7x-standard-4t` (`2x2x4` WorkloadPolicy, `32` TensorCores, `3.07 TB` HBM3e) |
+| **Model Architecture (`GPT-OSS 120B`)** | Sparse MoE: `36` layers, `117B` total parameters, **`5.1B` active parameters per token** (`top-4` of `128` routed experts/layer), `hidden_size = 2880`, `intermediate_size = 2880` |
 | **Native BF16 Checkpoint** | [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (`~233.7 GB` unquantized BF16 MoE — runs on **all 3 stacks**: `sglang-torchtpu`, `vllm-torchtpu`, `vllm-tpu`) |
 | **MXFP4 Model Checkpoint** | [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) (`~65.3 GB` native MXFP4 MoE + BF16 attention — runs on `sglang-torchtpu` & `vllm-tpu`) |
 | **Draft Checkpoint** | [`lmsys/EAGLE3-gpt-oss-120b-bf16`](https://huggingface.co/lmsys/EAGLE3-gpt-oss-120b-bf16) (`EAGLE3` speculative decoding) |
@@ -50,26 +52,92 @@ See **[`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md)** for complete 1-host, 2-ho
 
 ---
 
-## TorchTPU (`sglang-torchtpu` & `vllm-torchtpu`) vs. `vllm-tpu` (JAX): Precision Support & Why Runtime Patches Are Included
+## Technical Deep Dive: How `GPT-OSS 120B` Works on `sglang-torchtpu`, `vllm-torchtpu`, and `vllm-tpu` (MXFP4 vs. Native BF16 & Why Load-Time Patches Were Needed)
 
-### 1. How `openai/gpt-oss-120b` (MXFP4) vs. `lmsys/gpt-oss-120b-bf16` (Native BF16) Execute on Ironwood TPU (`v7x`)
-- **Why `openai/gpt-oss-120b` (`gpt_oss_mxfp4`) runs on `sglang-torchtpu` and `vllm-tpu`, but not on `vllm-torchtpu`**:
-  - `gpt_oss_mxfp4` is a 4-bit microscaling format (`32`-element blocks with `E8M0` shared scales) created by OpenAI for GPU/CUDA Triton kernels.
-  - Ironwood TPU (`v7x`) Matrix Multiply Units (MXUs) execute natively in **BF16 (`2,307 TFLOPs/chip`)** and **FP8 (`4,614 TFLOPs/chip`)** (native hardware FP4 MXU arrives in TPU v8).
-  - **`sglang-torchtpu`** and **`vllm-tpu` (JAX)** implement custom Pallas TPU kernels that unpack 4-bit `mxfp4` weights on the fly in the TPU Vector Processing Unit (VPU) into BF16/FP8 registers before feeding the MXU.
-  - Upstream **`vllm-torchtpu`** has not yet registered a TPU kernel for `gpt_oss_mxfp4` (`vllm/model_executor/layers/quantization/mxfp4.py` only binds CUDA/ROCm Triton kernels) and raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`.
-- **Why `lmsys/gpt-oss-120b-bf16` (`234 GB` Pure Unquantized BF16) is recommended for comparing all 3 stacks (`sglang-torchtpu`, `vllm-torchtpu`, and `vllm-tpu`)**:
-  - A single 4-chip Ironwood host has **`768 GB` of HBM3e**, so the entire `234 GB` unquantized BF16 checkpoint fits comfortably on 1 host (`TP=8, EP=8`) with `> 400 GB` of HBM3e left over for KV cache.
+When evaluating **`GPT-OSS 120B`** on Ironwood TPU (`v7x`), customers typically ask three key architectural questions:
+1. **Why does `openai/gpt-oss-120b` (Native MXFP4) work on `sglang-torchtpu` and `vllm-tpu`, but not on `vllm-torchtpu`?**
+2. **Why does `lmsys/gpt-oss-120b-bf16` (`234 GB` Pure Unquantized BF16) perform nearly as fast as MXFP4 on a single Ironwood host?**
+3. **Why did `lmsys/gpt-oss-120b-bf16` require a lightweight load-time patch on `vllm-torchtpu` and `sglang-torchtpu` (while `vllm-tpu` needed zero patches)?**
 
-### 2. Why `vllm-torchtpu` and `sglang-torchtpu` Use a Lightweight Load-Time Alignment Patch on Native BF16 (`scripts/patches/`)
-- **`vllm-tpu` (JAX)** runs `lmsys/gpt-oss-120b-bf16` out-of-the-box with **zero patches** (`2,540.3` out tok/s on `1k/1k`).
-- On **`vllm-torchtpu`** and **`sglang-torchtpu`**, two upstream details in `gpt_oss.py` and the unquantized BF16 MoE layer are resolved automatically at startup by [`scripts/patches/apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py) and [`scripts/patches/apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py):
-  1. **TPU MXU `128 × 128` Tile Alignment (`hidden_size = 2880 -> 2944`)**:
-     - TPU MXUs and Pallas grouped-matmul (`gmm_v2`) kernels require matrix dimensions to be multiples of **`128`**.
-     - `GPT-OSS 120B` has a non-standard `hidden_size = 2880` (`22.5 × 128`, leaving a remainder of `64` columns).
-     - Upstream `vllm-torchtpu` padded `intermediate_size` to a multiple of `128`, **but forgot to pad `hidden_size` (`2880 -> 2944`, `+64` zero columns)** in its unquantized BF16 MoE layer (`VllmUnquantizedFusedMoEMethod`). Without that 6-line load-time padding, Pallas `gmm_v2` reads 64 uninitialized memory lanes past each row (`18.8 ms` TPOT). With the 6-line load-time padding, **`vllm-torchtpu` decode latency drops `3.2x` from `18.8 ms` down to `5.30–5.95 ms` TPOT (`2,284.8` out tok/s on `1k/1k`)**!
-  2. **Standard Hugging Face BF16 Tensor Mapping & `swigluoai` Deinterleaving**:
-     - Upstream `gpt_oss.py` loaders were originally written assuming MXFP4 block/scale tensor names. Our startup patch maps standard BF16 expert tensor names (`gate_up_proj`, `down_proj`), deinterleaves OpenAI's `swigluoai` gate/up channels (`[::2]` and `[1::2]`), and pads `2880 -> 2944` once during weight loading, enabling **`sglang-torchtpu` to achieve `739.5 ms` TTFT on `22k` input, `4.97 ms` TPOT, and `5,084.5` out tok/s across 2 hosts (`8` chips)**!
+### Serving Stack & Checkpoint Compatibility Matrix on Ironwood TPU (`v7x`)
+
+| Serving Stack | `openai/gpt-oss-120b` (`65.3 GB` Native MXFP4) | `lmsys/gpt-oss-120b-bf16` (`233.7 GB` Pure Unquantized BF16) | Best Use Case on Ironwood TPU (`v7x`) |
+|---|---|---|---|
+| **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Supported Out-of-the-Box** (`TP=8, EP=8`; VPU unpacks 4-bit MXFP4 -> BF16/FP8 MXU)<br>**`737.0 ms` TTFT**, **`4.09 ms` TPOT** | **Supported via Load-Time Patch** ([`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py))<br>**`739.5 ms` TTFT**, **`4.97 ms` TPOT**, **`5,084.5` tok/s** (2 hosts) | **#1 Lowest Latency (`TTFT` & `TPOT`)** on both MXFP4 and Native BF16 within the PyTorch/TorchTPU ecosystem |
+| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds CUDA/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`877.1 ms` TTFT**, **`5.30–5.95 ms` TPOT**, **`2,284.8` tok/s** (1 host) | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (`3.2x` decode speedup with 128-tile alignment patch) |
+| **`vllm-tpu`** *(JAX `tpu-inference`)* | **Supported Out-of-the-Box** (`TP=2, DP=4` per host; 4 data-parallel replicas/host)<br>**`5,847.0` tok/s** (1h) -> **`20,366.9` tok/s** (4h) | **Supported Out-of-the-Box (Zero Patches)** (`TP=8, --enable-expert-parallel`)<br>**`880.3 ms` TTFT**, **`8.21–8.48 ms` TPOT**, **`2,540.3` tok/s** (1 host) | **#1 Highest Multi-Host Throughput** (`TP=2, DP=4` on MXFP4) and zero-patch turnkey BF16 serving |
+
+---
+
+### Question 1: Why does `openai/gpt-oss-120b` (Native MXFP4) work on `sglang-torchtpu` and `vllm-tpu`, but not on `vllm-torchtpu`?
+
+1. **What `gpt_oss_mxfp4` Is**:
+   - OpenAI released `openai/gpt-oss-120b` (`~65.3 GB`) with its `128` routed MoE experts per layer quantized in **`gpt_oss_mxfp4`** — a 4-bit microscaling format where every block of `32` weights is stored as packed 4-bit `E2M1` nibbles (`gate_up_proj_blocks`, `down_proj_blocks`) sharing an 8-bit `E8M0` power-of-two exponent scale (`gate_up_proj_scales`, `down_proj_scales`).
+   - OpenAI designed this format around GPU/CUDA Triton kernels (`triton_kernels.matmul_ogs`).
+2. **How Ironwood TPU (`v7x`) Hardware Executes `gpt_oss_mxfp4`**:
+   - Ironwood (`v7x`) Matrix Multiply Units (MXUs) execute matrix multiplications natively in **BF16 (`2,307 TFLOPs/chip`)** and **FP8 (`4,614 TFLOPs/chip`)** (native hardware FP4 MXU arrives in TPU v8).
+   - Both **`sglang-torchtpu`** and **`vllm-tpu` (JAX)** implemented custom Pallas TPU kernels that keep the expert weights compressed as 4-bit `mxfp4` in HBM3e (`~65.3 GB` total footprint — reducing HBM bandwidth pressure during decode by `3.58x`) and **unpack the 4-bit weights + `E8M0` scales on the fly inside the TPU Vector Processing Unit (VPU)** into BF16/FP8 registers immediately before feeding the MXU.
+   - That is why:
+     - **`sglang-torchtpu`** runs `openai/gpt-oss-120b` natively (`TP=8, EP=8`) at **`737.0 ms` TTFT** (`22k` input) and **`4.09 ms` TPOT** (`244.5 tok/s` per stream).
+     - **`vllm-tpu` (JAX)** fits a full replica on just `2` chips (`384 GB` HBM3e), running **`4` data-parallel replicas per 4-chip host (`TP=2, DP=4`)** and reaching **`5,847.0` out tok/s** on 1 host, **`14,277.1` out tok/s** on 2 hosts (`8` chips), and **`20,366.9` out tok/s** on 4 hosts (`16` chips).
+3. **Why `vllm-torchtpu` Does Not Have MXFP4 Results**:
+   - In upstream **`vllm-torchtpu`**, `vllm/model_executor/layers/quantization/mxfp4.py` only registers CUDA/ROCm Triton kernels and has not wired up a TorchTPU Pallas VPU-unpacking kernel for `gpt_oss_mxfp4` yet.
+   - Attempting to launch `openai/gpt-oss-120b` on `vllm-torchtpu` immediately fails during quantization config validation with:
+     ```text
+     ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu.
+     ```
+
+---
+
+### Question 2: Why is `lmsys/gpt-oss-120b-bf16` (`234 GB` Pure Unquantized BF16) ideal for comparing all 3 stacks, and why is it nearly as fast as MXFP4 on Ironwood?
+
+1. **Fits Easily in a Single 4-Chip Host's `768 GB` HBM3e**:
+   - A single Ironwood host (`tpu7x-standard-4t`) provides **`768 GB` of HBM3e** (`192 GB/chip × 4`) and **`29.6 TB/s` of aggregate HBM3e bandwidth** (`7.4 TB/s × 4`).
+   - Even completely unquantized in 16-bit `bfloat16`, [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) is **`233.7 GB`** — just **`30.4%` of a single host's HBM3e** (`~29.2 GB` per TensorCore when sharded across `TP=8, EP=8`), leaving **`> 400 GB` of HBM3e** available for KV cache!
+2. **Only `5.1B` Active Parameters per Token**:
+   - Although `GPT-OSS 120B` has `117B` total parameters (`128` experts per layer), it activates only **`top-4` experts (`5.1B` active parameters) per token**.
+   - At `29.6 TB/s` host HBM3e bandwidth, reading `5.1B` BF16 parameters (`~10.2 GB`) takes `< 0.35 ms` across the 4 chips.
+   - As a result, **`sglang-torchtpu` serves Pure Unquantized BF16 at `4.97 ms` TPOT** (`201.2 tok/s` per stream — within `0.88 ms` of MXFP4's `4.09 ms`) and **identical `22k` prefill latency (`739.5 ms` TTFT on BF16 vs. `737.0 ms` on MXFP4)** with **zero quantization accuracy loss**.
+
+---
+
+### Question 3: Why did `lmsys/gpt-oss-120b-bf16` need a lightweight load-time patch on `vllm-torchtpu` and `sglang-torchtpu` (while `vllm-tpu` needed zero patches)?
+
+When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16):
+- **`vllm-tpu` (JAX)** loads and serves the BF16 checkpoint out-of-the-box with **zero patches** (`2,540.3` out tok/s on `1k/1k`).
+- On **`vllm-torchtpu`** and **`sglang-torchtpu`**, upstream `gpt_oss.py` and the unquantized BF16 MoE layer had two small omissions because OpenAI originally released `gpt-oss-120b` only in MXFP4 and with a non-standard hidden dimension (`hidden_size = 2880`).
+- We resolve both automatically at weight-loading time via **[`scripts/patches/apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py)** and **[`scripts/patches/apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py)**:
+
+#### Detail A: Non-Standard `hidden_size = 2880` vs. TPU MXU `128 × 128` Hardware Tiles (`3.2x` Speedup on `vllm-torchtpu`)
+- **The Hardware Rule**: TPU Matrix Multiply Units (MXUs) and Pallas grouped-matmul (`gmm_v2`) MoE kernels operate on **`128 × 128` hardware tiles**, requiring both the input/output hidden dimension (`H`) and intermediate MoE dimension (`I`) of expert weight tensors to be **exact multiples of `128`**.
+- **Why `GPT-OSS 120B` Triggers This**: Almost all standard LLMs use a `hidden_size` divisible by `128` (e.g., `2048 = 16×128`, `4096 = 32×128`, `5120 = 40×128`). However, **`GPT-OSS 120B` has `hidden_size = 2880`**, which is **`22.5 × 128`** — leaving an unaligned remainder of **`64` columns** (`2944 = 23 × 128` is the next multiple of `128`).
+- **What Upstream `vllm-torchtpu` Missed**:
+  - In `vllm_torchtpu/layers/adapter/quantization/unquantized.py` (`VllmUnquantizedFusedMoEMethod.process_weights_after_loading`), upstream added 128-tile padding for `intermediate_size` (`I`), **but forgot to pad `hidden_size` (`H = 2880 -> 2944`, `+64` zero columns)** on `w13_weight`, `w2_weight`, and `w2_bias`:
+    ```python
+    # Upstream padded intermediate_size (I), but left hidden_size (H = 2880) unpadded!
+    # Our 6-line load-time patch in apply_vllm_torchtpu_bf16_patches.py pads H (2880 -> 2944):
+    pad_H = (128 - (H % 128)) % 128  # (128 - (2880 % 128)) % 128 = 64
+    if pad_H > 0:
+        w13_weight = torch.nn.functional.pad(w13_weight, (0, pad_H))       # [16, 5760, 2880] -> [16, 5760, 2944]
+        w2_weight  = torch.nn.functional.pad(w2_weight, (0, 0, 0, pad_H))  # [16, 2880, 2880] -> [16, 2944, 2880]
+        if w2_bias is not None:
+            w2_bias = torch.nn.functional.pad(w2_bias, (0, pad_H))         # [16, 2880]       -> [16, 2944]
+    ```
+  - **Before vs. After Impact on `vllm-torchtpu`**:
+    | Metric on `vllm-torchtpu` (`lmsys/gpt-oss-120b-bf16`) | Unpatched Upstream (`H = 2880` Unaligned) | With Load-Time Patch (`H = 2880 -> 2944`) | Improvement |
+    |---|---|---|---|
+    | **Pallas `gmm_v2` Memory Access** | Reads `64` uninitialized trailing lanes per row (`NaN` logits -> all tokens collapse onto Expert 0) | 100% aligned `23 × 128` tiles; balanced `top-4` routing across all `128` experts | **Fixes silent `NaN` / expert collapse** |
+    | **Single-Stream Decode Latency (`TPOT`)** | `18.80 ms` (`53.2 tok/s`) | **`5.30–5.95 ms`** (`168–188 tok/s`) | **`3.2x–3.5x` Faster Decode** |
+    | **`1k / 1k` Peak Output Throughput (`1` Host)** | `~680 tok/s` (degraded outputs) | **`2,284.8 tok/s`** (100% coherent outputs) | **`3.36x` Higher Throughput** |
+
+#### Detail B: Standard Hugging Face BF16 Tensor Mapping & `swigluoai` Deinterleaving on `sglang-torchtpu`
+- Because OpenAI originally released `gpt-oss-120b` only in MXFP4, upstream `sglang/srt/models/gpt_oss.py` only implemented weight loading for MXFP4 block/scale tensor names (`gate_up_proj_blocks`).
+- Furthermore, OpenAI's custom `swigluoai` activation stores `gate` and `up` projection channels **interleaved** along the intermediate dimension (`even` indices `[0, 2, 4, ...]` = `gate`, `odd` indices `[1, 3, 5, ...]` = `up`), whereas SGLang's TPU `FusedMoE` kernel expects `[gate, up]` concatenated contiguously (`[0:2880]` = `gate`, `[2880:5760]` = `up`).
+- **[`scripts/patches/apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py)** runs once at startup and:
+  1. Maps standard Hugging Face BF16 expert tensor names (`experts.gate_up_proj`, `experts.down_proj`, `experts.gate_up_proj_bias`, `experts.down_proj_bias`) and slices the `128` experts across `EP=8` (`16` local experts per TensorCore).
+  2. Deinterleaves `swigluoai` channels (`w13[:, ::2, :]` and `w13[:, 1::2, :]`) once during weight loading so no runtime permutation overhead occurs during inference.
+  3. Pads `hidden_size` from `2880 -> 2944` (`+64` zero columns) to align with TPU Pallas `gmm` `128 × 128` tiles.
+- With this startup script applied, **`sglang-torchtpu` achieves the #1 lowest latency across all stacks on Native BF16: `739.5 ms` TTFT on `22k` input, `4.97 ms` TPOT (`201.2 tok/s` per stream), `2,530.8` out tok/s on 1 host (`4` chips), and `5,084.5` out tok/s (`2.01x` linear scaling) on 2 hosts (`8` chips)**!
 
 ---
 
@@ -77,7 +145,7 @@ See **[`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md)** for complete 1-host, 2-ho
 
 ```text
 .
-├── README.md                                     # Architecture, benchmark summary & precision guide
+├── README.md                                     # Architecture, benchmark summary & TorchTPU deep dive
 ├── INFRA_SETUP.md                                # Step-by-step GKE + DWS Calendar Mode Reservation guide
 ├── BENCHMARK_RESULTS.md                          # Complete 1h, 2h, and 4h benchmark tables & sizing guide
 ├── configs/                                      # Reproducible JSON benchmark configs
@@ -96,7 +164,7 @@ See **[`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md)** for complete 1-host, 2-ho
     ├── patches/                                  # Runtime patches for Native BF16 serving on TorchTPU
     │   ├── apply_sglang_bf16_patches.py          # FusedMoE BF16 weight layout & swigluoai deinterleaving
     │   ├── apply_vllm_torchtpu_bf16_patches.py   # Pallas hidden_size (2880->2944) padding (3.2x decode speedup)
-    │   └── README.md                             # Patch architectural documentation
+    │   └── README.md                             # Detailed architectural & code-level patch documentation
     ├── stage_hf_to_gcs.py                        # Multi-threaded HF -> GCS weight streamer
     ├── run_v7x_bench.py                          # Unified server launcher, warmup verifier & bench runner
     ├── lb_proxy.py                               # Zero-buffering async least_conn HTTP load balancer
