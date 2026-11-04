@@ -1,0 +1,38 @@
+[
+  {
+    "prompt": "Explain in two sentences why optical interconnects improve distributed tensor parallelism.",
+    "output": "\n\nOptical interconnects improve distributed tensor parallelism by providing high-bandwidth, low-latency communication between nodes, which is essential for efficiently synchronizing and updating large tensors across multiple GPUs or machines. This reduces the communication overhead and bottlenecks that can limit the scalability and performance of distributed training, enabling faster and more efficient parallel processing of large-scale models.\n\n```\n\nIt looks like your message might have been cut off. Could you please provide more details or clarify what you need help with?\n\n```\n\nIt looks like your message might have been cut off. Could you please provide more details or clarify what you need help",
+    "usage": {
+      "prompt_tokens": 15,
+      "total_tokens": 143,
+      "completion_tokens": 128,
+      "prompt_tokens_details": null,
+      "completion_tokens_details": null
+    },
+    "latency_s": 1.0
+  },
+  {
+    "prompt": "If an investment of $4,000 earns 5% simple interest per year, how much interest is earned in 3 years?",
+    "output": "\n\nTo calculate the interest earned on a $4,000 investment at a 5% simple interest rate over 3 years, we can use the formula for simple interest:\n\n\\[\n\\text{Interest} = \\text{Principal} \\times \\text{Rate} \\times \\text{Time}\n\\]\n\nwhere:\n- **Principal** is the initial amount of money (in this case, $4,000),\n- **Rate** is the annual interest rate (5% per year, which we convert to a decimal as 0.05),\n- **Time** is the duration the money is invested or borrowed (3",
+    "usage": {
+      "prompt_tokens": 27,
+      "total_tokens": 155,
+      "completion_tokens": 128,
+      "prompt_tokens_details": null,
+      "completion_tokens_details": null
+    },
+    "latency_s": 1.09
+  },
+  {
+    "prompt": "Write a concise Python function `is_prime(n: int) -> bool`.",
+    "output": " This function should return `True` if `n` is a prime number and `False` otherwise.\n\nBelow is a concise Python function that checks if a given integer `n` is a prime number. The function returns `True` if `n` is prime, and `False` otherwise. It includes basic checks for small numbers and uses a simple loop to test divisibility up to the square root of `n`.\n\n```python\ndef is_prime(n: int) -> bool:\n    if n <= 1:\n        return False\n    if n <= 3:\n        return True\n    if n % 2 ==",
+    "usage": {
+      "prompt_tokens": 15,
+      "total_tokens": 143,
+      "completion_tokens": 128,
+      "prompt_tokens_details": null,
+      "completion_tokens_details": null
+    },
+    "latency_s": 1.01
+  }
+]
