@@ -17,7 +17,7 @@ Production-ready inference recipes, **GKE + DWS Calendar Mode reservation** prov
 | **2-Host Deployment (`8` Chips)** | `2 × tpu7x-standard-4t` (`2x2x2` WorkloadPolicy, `16` TensorCores, `1.54 TB` HBM3e) |
 | **4-Host Deployment (`16` Chips)** | `4 × tpu7x-standard-4t` (`2x2x4` WorkloadPolicy, `32` TensorCores, `3.07 TB` HBM3e) |
 | **Model Architecture (`GPT-OSS 120B`)** | Sparse MoE: `36` layers, `117B` total parameters, **`5.1B` active parameters per token** (`top-4` of `128` routed experts/layer), `hidden_size = 2880`, `intermediate_size = 2880` |
-| **Native BF16 Checkpoint** | [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (`~233.7 GB` unquantized BF16 MoE — runs on **all 3 stacks**: `sglang-torchtpu`, `vllm-torchtpu`, `vllm-tpu`) |
+| **BF16 Checkpoint** | [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (`~233.7 GB`; BF16 conversion of the `openai/gpt-oss-120b` MXFP4 checkpoint with the MoE experts dequantized to BF16 — runs on **all 3 stacks**: `sglang-torchtpu`, `vllm-torchtpu`, `vllm-tpu`) |
 | **MXFP4 Model Checkpoint** | [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) (`~65.3 GB` native MXFP4 MoE + BF16 attention — runs on `sglang-torchtpu` & `vllm-tpu`) |
 | **Draft Checkpoint** | [`lmsys/EAGLE3-gpt-oss-120b-bf16`](https://huggingface.co/lmsys/EAGLE3-gpt-oss-120b-bf16) (`EAGLE3` speculative decoding) |
 
@@ -25,29 +25,39 @@ Production-ready inference recipes, **GKE + DWS Calendar Mode reservation** prov
 
 ## Performance Highlights
 
-All benchmarks use `vllm bench serve` with uncached random token IDs (`--ignore-eos`, zero prefix-cache reuse) and track strict per-request SLA Goodput (`TTFT <= 500 ms`, `TPOT <= 10 ms`, `E2EL <= 60 s`).
+All benchmarks use `vllm bench serve` with uncached random token IDs (`--ignore-eos`, zero prefix-cache reuse) and track strict per-request SLA Goodput (`TTFT <= 500 ms`, `TPOT <= 10 ms`, `E2EL <= 60 s`). BF16 weights with a BF16 KV cache are the primary configuration; rows that use an FP8 KV cache or MXFP4 experts are optional (non-BF16) and are labeled as such.
 
-### 1. Native Unquantized BF16 (`lmsys/gpt-oss-120b-bf16`, `234 GB` Weights) Across 1 & 2 Hosts
+### 1. BF16 Weights (`lmsys/gpt-oss-120b-bf16`, `234 GB`) Across 1 & 2 Hosts
 
-| Scale | Serving Stack & KV Precision | `22k / 4k` `CON=1` TTFT P50 | `22k / 4k` `CON=1` TPOT P50 | `22k / 4k` Peak Out tok/s | `1k / 1k` `CON=1` TPOT P50 | `1k / 1k` Peak Out tok/s | `8k / 1k` Peak Out tok/s |
-|---|---|---:|---:|---:|---:|---:|---:|
-| **1 Host (4 Chips)** | `sglang-torchtpu` (BF16 KV, Patched) | **`739.5 ms`** | **`4.97 ms`** | `1,150.1` | **`4.85 ms`** | `2,530.8` | `1,630.1` |
-| **1 Host (4 Chips)** | `sglang-torchtpu` + `EAGLE3` (BF16 KV) | `762.8 ms` | `5.48 ms` | `977.7` | `5.32 ms` | `2,059.0` | `1,349.1` |
-| **1 Host (4 Chips)** | `vllm-torchtpu` (BF16 KV, Patched) | `878.7 ms` | `5.95 ms` | `733.6` | `5.30 ms` | `2,243.0` | `1,600.2` |
-| **1 Host (4 Chips)** | `vllm-torchtpu` (FP8 KV, Patched) | `877.1 ms` | `5.96 ms` | `739.8` | `5.30 ms` | `2,284.8` | `1,612.4` |
-| **1 Host (4 Chips)** | `vllm-tpu` (JAX, BF16 KV, Unpatched) | `880.5 ms` | `8.54 ms` | `1,249.9` | `8.21 ms` | `2,463.7` | `1,557.4` |
-| **1 Host (4 Chips)** | `vllm-tpu` (JAX, FP8 KV, Unpatched) | `880.3 ms` | `8.48 ms` | `1,302.6` | `8.26 ms` | `2,540.3` | `1,582.9` |
-| **2 Hosts (8 Chips)**| `2x sglang-torchtpu` + `least_conn` LB | **`771.4 ms`** | **`5.05 ms`** | **`2,433.8`** (`2.12x`) | **`5.77 ms`** (`CON=8`) | `5,084.5` (`2.01x`) | **`3,281.0`** (`2.01x`) |
-| **2 Hosts (8 Chips)**| `2x vllm-tpu` (JAX) + `least_conn` LB | `882.6 ms` | `5.99 ms` | `1,460.5` (`1.17x`) | `6.63 ms` (`CON=8`) | **`5,567.6`** (`2.26x`) | `2,814.4` (`1.81x`) |
+`lmsys/gpt-oss-120b-bf16` is a BF16 conversion of the `openai/gpt-oss-120b` MXFP4 checkpoint: the MoE expert weights are dequantized from MXFP4 to BF16, and the attention, router and embedding weights are BF16 in both checkpoints. Each peak cell shows the concurrency (`CON`) and the number of prompts (`n`) of the run that produced it.
 
-### 2. Multi-Host Scaling (`openai/gpt-oss-120b` MXFP4, `65.3 GB` Weights)
+| Scale | Serving Stack | Layout · KV Cache | `22k / 4k` `CON=1` TTFT P50 | `22k / 4k` `CON=1` TPOT P50 | `n` | `22k / 4k` Closed-Loop Peak Out tok/s | `1k / 1k` `CON=1` TPOT P50 | `1k / 1k` Peak Out tok/s | `8k / 1k` Peak Out tok/s |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **1 Host (4 Chips)** | `sglang-torchtpu` (load-time BF16 patch) | `TP=8, EP=8` · BF16 KV | `739.5 ms` | `4.97 ms` | `12` | `1,150.1` (`CON=32`, `n=48`) | `4.85 ms` (`n=24`) | `2,530.8` (`CON=32`, `n=96`) | `1,641.9` (`CON=32`, `n=64`) |
+| **1 Host (4 Chips)** | `sglang-torchtpu` + `EAGLE3` (load-time BF16 patch) | `TP=8, EP=8` · BF16 KV | `762.8 ms` | `5.48 ms` | `12` | `934.1` (`CON=32`, `n=48`) | `5.32 ms` (`n=24`) | `2,059.0` (`CON=32`, `n=96`) | `1,333.7` (`CON=32`, `n=64`) |
+| **1 Host (4 Chips)** | `vllm-torchtpu` (load-time BF16 patch) | `TP=8, DP=1, EP=true` · BF16 KV | `878.7 ms` | `5.95 ms` | `12` | `733.6` (`CON=32`, `n=48`) | `5.30 ms` (`n=24`) | `2,243.0` (`CON=32`, `n=96`) | `1,223.2` (`CON=32`, `n=64`) |
+| **1 Host (4 Chips)** | `vllm-tpu` (JAX, no patch) | `TP=8, DP=1, EP=true` · BF16 KV | `880.5 ms` | `8.54 ms` | `12` | `1,249.9` (`CON=32`, `n=48`) | `8.21 ms` (`n=24`) | `2,463.7` (`CON=32`, `n=96`) | `1,557.4` (`CON=32`, `n=64`) |
+| **2 Hosts (8 Chips)** | `2x sglang-torchtpu` + `least_conn` LB | `2 x (TP=8, EP=8)` · BF16 KV | `771.4 ms` | `5.05 ms` | `10` | `2,433.8` (`CON=32`, `n=64`) | not run¹ | `5,084.5` (`CON=64`, `n=192`) | `3,281.0` (`CON=128`, `n=256`) |
+| **2 Hosts (8 Chips)** | `2x vllm-tpu` (JAX) + `least_conn` LB | `2 x (TP=8, DP=1, EP=true)` · BF16 KV | `882.6 ms` | `5.99 ms` | `10` | `1,460.5` (`CON=64`, `n=96`) | not run¹ | `5,567.6` (`CON=128`, `n=256`) | `2,814.4` (`CON=128`, `n=256`) |
+| **1 Host (4 Chips)** | `vllm-torchtpu` (load-time BF16 patch) | `TP=8, DP=1, EP=true` · FP8 KV — optional (non-BF16) | `877.1 ms` | `5.96 ms` | `12` | `739.8` (`CON=32`, `n=48`) | `5.30 ms` (`n=24`) | `2,284.8` (`CON=32`, `n=96`) | `1,243.1` (`CON=32`, `n=64`) |
+| **1 Host (4 Chips)** | `vllm-tpu` (JAX, no patch) | `TP=8, DP=1, EP=true` · FP8 KV — optional (non-BF16) | `880.3 ms` | `8.48 ms` | `12` | `1,302.6` (`CON=32`, `n=48`) | `8.26 ms` (`n=24`) | `2,540.3` (`CON=32`, `n=96`) | `1,582.9` (`CON=32`, `n=64`) |
 
-| Scale | Chips (Cores) | Serving Engine & Topology | `1k / 1k` Peak Out tok/s | `1k / 1k` Peak Goodput | `8k / 1k` Peak Out tok/s (Total tok/s) | `22k / 4k` Peak Out tok/s | `22k / 4k` @ `6 RPS` P50 TPOT / E2E |
+¹ The 2-host runs have no `1k / 1k` `CON=1` cell. Their lowest-concurrency `1k / 1k` cell is `CON=8` (`n=64` each): TPOT P50 `5.77 ms` (`sglang-torchtpu`) and `6.63 ms` (`vllm-tpu`).
+
+**Sample size (`n`)**: the customer workload specifies `n=50` prompts per cell. The 1-host `22k / 4k` cells used `n=12 / 30 / 36 / 48` at `CON=1 / 6 / 16 / 32` and `n=28–40` for open-loop RPS; the 2-host `22k / 4k` cells used `n=10–96`.
+
+**2-host vs 1-host at the same per-replica concurrency** (derived; 1 host at `CON=32` vs 2 hosts at `CON=64`, i.e. 32 in-flight requests per replica): `sglang-torchtpu` `2.01x` (`1k / 1k`), `1.97x` (`8k / 1k`), `1.94x` (`22k / 4k`); `vllm-tpu` `1.80x`, `1.57x`, `1.17x`. Source cells: [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md) §4.3.
+
+### 2. Optional (non-BF16): MXFP4 Experts (`openai/gpt-oss-120b`, `65.3 GB`) with FP8 KV, 1 / 2 / 4 Hosts
+
+| Scale | Chips (Cores) | Serving Engine · Layout · KV Cache | `1k / 1k` Peak Out tok/s | `1k / 1k` Highest SLA Goodput | `8k / 1k` Peak Out tok/s (Total tok/s) | `22k / 4k` Closed-Loop Peak Out tok/s | `22k / 4k` @ `6 RPS` P50 TPOT / E2E |
 |---|---:|---|---:|---:|---:|---:|---:|
-| **1 Host** | `4` (`8`) | `vllm-tpu` (JAX) `TP=2, DP=4`, FP8 KV | **`5,847.0`** | `3.340 req/s` | `2,696.6` (`24,269.5`) | `1,789.4` | `14.76 ms` / `71.17 s` |
-| **1 Host** | `4` (`8`) | `sglang-torchtpu` `TP=8, EP=8`, FP8 KV | `2,587.5` | `1.104 req/s` | `1,630.1` (`14,670.9`) | `1,242.2` | `4.09 ms` TPOT / **`737.0 ms` TTFT** @ `CON=1` |
-| **2 Hosts** | `8` (`16`) | `2x vllm-tpu` (`TP=2, DP=4`) + `least_conn` LB | **`14,277.1`** | `5.054 req/s` | `6,533.7` (`58,803.6`) | `3,315.7` | `11.27 ms` / `50.51 s` |
-| **4 Hosts** | `16` (`32`) | `4x vllm-tpu` (`TP=2, DP=4`) + `least_conn` LB | **`20,366.9`** | **`8.584 req/s`** | **`9,820.8`** (**`88,387.3`**) | **`8,749.7`** | **`8.82 ms`** (`P95 9.96 ms`) / **`37.90 s`** |
+| **1 Host** | `4` (`8`) | `vllm-tpu` (JAX) `TP=2, DP=4` · FP8 KV | `5,847.0` (`CON=64`, `n=128`) | `3.340 req/s` (`CON=32`, `n=128`) | `2,696.6` (`24,269.5`) (`CON=64`, `n=96`) | `1,789.4` (`CON=32`, `n=50`) | `14.76 ms` / `71.17 s` (`n=50`) |
+| **1 Host** | `4` (`8`) | `sglang-torchtpu` `TP=8, EP=8` · FP8 KV | `2,587.5` (`CON=32`, `n=128`) | `1.104 req/s` (`CON=8`, `n=64`) | `1,630.1` (`14,670.9`) (`CON=32`, `n=64`) | `1,242.2` (`CON=16`, `n=48`) | not run (open-loop runs at `RPS=0.5–2.0` only) |
+| **2 Hosts** | `8` (`16`) | `2x vllm-tpu` (`TP=2, DP=4`) + `least_conn` LB · FP8 KV | `14,277.1` (`CON=256`, `n=512`) | `5.054 req/s` (`CON=64`, `n=192`) | `6,533.7` (`58,803.6`) (`CON=128`, `n=256`) | `3,315.7` (`CON=64`, `n=96`) | `11.27 ms` / `50.51 s` (`n=60`) |
+| **4 Hosts** | `16` (`32`) | `4x vllm-tpu` (`TP=2, DP=4`) + `least_conn` LB · FP8 KV | `20,366.9` (`CON=256`, `n=512`) | `8.584 req/s` (`CON=128`, `n=256`) | `9,820.8` (`88,387.3`) (`CON=128`, `n=256`) | `8,749.7` (`CON=128`, `n=128`) | `8.82 ms` (`P95 9.96 ms`) / `37.90 s` (`n=60`) |
+
+**Sample size (`n`)**: `22k / 4k` cells used `n=16–50` at 1 host and `n=10–128` at 2 and 4 hosts (customer workload: `n=50`).
 
 See **[`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md)** for complete 1-host, 2-host, and 4-host telemetry across all suites.
 
@@ -64,9 +74,9 @@ When evaluating **`GPT-OSS 120B`** on Ironwood TPU (`v7x`), customers typically 
 
 | Serving Stack | `openai/gpt-oss-120b` (`65.3 GB` Native MXFP4) | `lmsys/gpt-oss-120b-bf16` (`233.7 GB` Pure Unquantized BF16) | Best Use Case on Ironwood TPU (`v7x`) |
 |---|---|---|---|
-| **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Supported Out-of-the-Box** (`TP=8, EP=8`; VPU unpacks 4-bit MXFP4 -> BF16/FP8 MXU)<br>**`737.0 ms` TTFT**, **`4.09 ms` TPOT** | **Supported via Load-Time Patch** ([`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py))<br>**`739.5 ms` TTFT**, **`4.97 ms` TPOT**, **`5,084.5` tok/s** (2 hosts) | **#1 Lowest Latency (`TTFT` & `TPOT`)** and **#1 Long-Context (`22k/4k`) Throughput on BF16** within the PyTorch/TorchTPU ecosystem |
-| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds GPU/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`877.1 ms` TTFT**, **`5.30–5.95 ms` TPOT**, **`2,284.8` tok/s** (1 host) | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (`3.2x` decode speedup with 128-tile alignment patch) |
-| **`vllm-tpu`** *(JAX `tpu-inference`)* | **Supported Out-of-the-Box** (`TP=2, DP=4` per host; 4 data-parallel replicas/host)<br>**`5,847.0` tok/s** (1h) -> **`20,366.9` tok/s** (4h) | **Supported Out-of-the-Box (Zero Patches)** (`TP=8, --enable-expert-parallel`)<br>**`880.3 ms` TTFT**, **`5.99–8.48 ms` TPOT**, **`5,567.6` tok/s** (2 hosts) | **#1 Highest Multi-Host Throughput** (`20,366.9` tok/s on MXFP4 4-host; `5,567.6` tok/s on BF16 2-host) |
+| **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Supported Out-of-the-Box** (`TP=8, EP=8`; VPU unpacks 4-bit MXFP4 -> BF16/FP8 MXU)<br>**`737.0 ms` TTFT**, **`4.09 ms` TPOT** (`22k/4k`, `CON=1`; FP8 KV — optional, non-BF16) | **Supported via Load-Time Patch** ([`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py))<br>**`739.5 ms` TTFT**, **`4.97 ms` TPOT** (`22k/4k`, `CON=1`, 1 host), **`5,084.5` tok/s** (`1k/1k`, 2 hosts, `CON=64`); BF16 KV | **#1 Lowest Latency (`TTFT` & `TPOT`)** and **#1 Long-Context (`22k/4k`) Throughput on BF16** within the PyTorch/TorchTPU ecosystem |
+| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds GPU/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`878.7 ms` TTFT**, **`5.95 ms` TPOT** (`22k/4k`, `CON=1`), **`2,243.0` tok/s** (`1k/1k`, 1 host, `CON=32`); BF16 KV | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (`3.2x` decode speedup with 128-tile alignment patch) |
+| **`vllm-tpu`** *(JAX `tpu-inference`)* | **Supported Out-of-the-Box** (`TP=2, DP=4` per host; 4 data-parallel replicas/host)<br>**`5,847.0` tok/s** (1h) -> **`20,366.9` tok/s** (4h) (`1k/1k`; FP8 KV — optional, non-BF16) | **Supported Out-of-the-Box (Zero Patches)** (`TP=8, --enable-expert-parallel`)<br>**`880.5 ms` TTFT**, **`8.54 ms` TPOT** (`22k/4k`, `CON=1`, 1 host; `5.99 ms` TPOT on the 2-host run), **`5,567.6` tok/s** (`1k/1k`, 2 hosts, `CON=128`); BF16 KV | **#1 Highest Multi-Host `1k/1k` Throughput** (`20,366.9` tok/s on MXFP4 + FP8 KV, 4 hosts; `5,567.6` tok/s on BF16, 2 hosts) |
 
 ---
 
@@ -98,14 +108,14 @@ When evaluating **`GPT-OSS 120B`** on Ironwood TPU (`v7x`), customers typically 
 2. **Only `5.1B` Active Parameters per Token**:
    - Although `GPT-OSS 120B` has `117B` total parameters (`128` experts per layer), it activates only **`top-4` experts (`5.1B` active parameters) per token**.
    - At `29.6 TB/s` host HBM3e bandwidth, reading `5.1B` BF16 parameters (`~10.2 GB`) takes `< 0.35 ms` across the 4 chips.
-   - As a result, **`sglang-torchtpu` serves Pure Unquantized BF16 at `4.97 ms` TPOT** (`201.2 tok/s` per stream — within `0.88 ms` of MXFP4's `4.09 ms`) and **identical `22k` prefill latency (`739.5 ms` TTFT on BF16 vs. `737.0 ms` on MXFP4)** with **zero quantization accuracy loss**.
+   - As a result, **`sglang-torchtpu` serves Pure Unquantized BF16 at `4.97 ms` TPOT** (BF16 KV; `201.2 tok/s` per stream — within `0.88 ms` of MXFP4's `4.09 ms` with FP8 KV) and **identical `22k` prefill latency (`739.5 ms` TTFT on BF16 vs. `737.0 ms` on MXFP4)** with **zero quantization accuracy loss**.
 
 ---
 
 ### Question 3: Why did `lmsys/gpt-oss-120b-bf16` need a lightweight load-time patch on `vllm-torchtpu` and `sglang-torchtpu` (while `vllm-tpu` needed zero patches)?
 
 When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16):
-- **`vllm-tpu` (JAX)** loads and serves the BF16 checkpoint out-of-the-box with **zero model-code patches** (`2,540.3` out tok/s on 1 host and **`5,567.6` out tok/s** across 2 hosts).
+- **`vllm-tpu` (JAX)** loads and serves the BF16 checkpoint out-of-the-box with **zero model-code patches** (`2,463.7` out tok/s on 1 host and **`5,567.6` out tok/s** across 2 hosts; `1k/1k`, BF16 KV).
 - On **`vllm-torchtpu`** and **`sglang-torchtpu`**, upstream `gpt_oss.py` and the unquantized BF16 MoE layer had two small omissions because OpenAI originally released `gpt-oss-120b` only in MXFP4 and with a non-standard hidden dimension (`hidden_size = 2880`).
 - We resolve both automatically at weight-loading time via **[`scripts/patches/apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py)** and **[`scripts/patches/apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py)**:
 
@@ -138,7 +148,7 @@ When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
   1. Maps standard Hugging Face BF16 expert tensor names (`experts.gate_up_proj`, `experts.down_proj`, `experts.gate_up_proj_bias`, `experts.down_proj_bias`) and slices the `128` experts across `EP=8` (`16` local experts per TensorCore).
   2. Deinterleaves `swigluoai` channels (`w13[:, ::2, :]` and `w13[:, 1::2, :]`) once during weight loading so no runtime permutation overhead occurs during inference.
   3. Pads `hidden_size` from `2880 -> 2944` (`+64` zero columns) to align with TPU Pallas `gmm` `128 × 128` tiles.
-- With this startup script applied, **`sglang-torchtpu` achieves the #1 lowest latency across all stacks on Native BF16: `739.5 ms` TTFT on `22k` input, `4.97 ms` TPOT (`201.2 tok/s` per stream), `2,530.8` out tok/s on 1 host (`4` chips), and `5,084.5` out tok/s (`2.01x` linear scaling) on 2 hosts (`8` chips)**!
+- With this startup script applied, **`sglang-torchtpu` achieves the #1 lowest latency across all stacks on Native BF16: `739.5 ms` TTFT on `22k` input, `4.97 ms` TPOT (`201.2 tok/s` per stream), `2,530.8` out tok/s on 1 host (`4` chips), and `5,084.5` out tok/s on 2 hosts (`8` chips) on `1k/1k` (`2.01x` at the same per-replica concurrency, derived)**!
 
 ---
 
