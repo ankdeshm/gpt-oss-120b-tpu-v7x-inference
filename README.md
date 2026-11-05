@@ -75,7 +75,7 @@ When evaluating **`GPT-OSS 120B`** on Ironwood TPU (`v7x`), customers typically 
 | Serving Stack | `openai/gpt-oss-120b` (`65.3 GB` Native MXFP4) | `lmsys/gpt-oss-120b-bf16` (`233.7 GB` Pure Unquantized BF16) | Best Use Case on Ironwood TPU (`v7x`) |
 |---|---|---|---|
 | **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Supported Out-of-the-Box** (`TP=8, EP=8`; VPU unpacks 4-bit MXFP4 -> BF16/FP8 MXU)<br>**`737.0 ms` TTFT**, **`4.09 ms` TPOT** (`22k/4k`, `CON=1`; FP8 KV — optional, non-BF16) | **Supported via Load-Time Patch** ([`apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py))<br>**`739.5 ms` TTFT**, **`4.97 ms` TPOT** (`22k/4k`, `CON=1`, 1 host), **`5,084.5` tok/s** (`1k/1k`, 2 hosts, `CON=64`); BF16 KV | **#1 Lowest Latency (`TTFT` & `TPOT`)** and **#1 Long-Context (`22k/4k`) Throughput on BF16** within the PyTorch/TorchTPU ecosystem |
-| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds GPU/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`878.7 ms` TTFT**, **`5.95 ms` TPOT** (`22k/4k`, `CON=1`), **`2,243.0` tok/s** (`1k/1k`, 1 host, `CON=32`); BF16 KV | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (`3.2x` decode speedup with 128-tile alignment patch) |
+| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`mxfp4.py` only binds GPU/ROCm Triton kernels; raises `ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Supported via Load-Time Patch** ([`apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py))<br>**`878.7 ms` TTFT**, **`5.95 ms` TPOT** (`22k/4k`, `CON=1`), **`2,243.0` tok/s** (`1k/1k`, 1 host, `CON=32`); BF16 KV | **Standard vLLM PyTorch/TorchTPU Stack** for Pure BF16 serving (128-tile alignment patch: `22k/4k` `CON=1` TPOT P50 `18.83 ms` -> `5.95 ms`, `3.2x`, derived) |
 | **`vllm-tpu`** *(JAX `tpu-inference`)* | **Supported Out-of-the-Box** (`TP=2, DP=4` per host; 4 data-parallel replicas/host)<br>**`5,847.0` tok/s** (1h) -> **`20,366.9` tok/s** (4h) (`1k/1k`; FP8 KV — optional, non-BF16) | **Supported Out-of-the-Box (Zero Patches)** (`TP=8, --enable-expert-parallel`)<br>**`880.5 ms` TTFT**, **`8.54 ms` TPOT** (`22k/4k`, `CON=1`, 1 host; `5.99 ms` TPOT on the 2-host run), **`5,567.6` tok/s** (`1k/1k`, 2 hosts, `CON=128`); BF16 KV | **#1 Highest Multi-Host `1k/1k` Throughput** (`20,366.9` tok/s on MXFP4 + FP8 KV, 4 hosts; `5,567.6` tok/s on BF16, 2 hosts) |
 
 ---
@@ -119,7 +119,7 @@ When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
 - On **`vllm-torchtpu`** and **`sglang-torchtpu`**, upstream `gpt_oss.py` and the unquantized BF16 MoE layer had two small omissions because OpenAI originally released `gpt-oss-120b` only in MXFP4 and with a non-standard hidden dimension (`hidden_size = 2880`).
 - We resolve both automatically at weight-loading time via **[`scripts/patches/apply_vllm_torchtpu_bf16_patches.py`](scripts/patches/apply_vllm_torchtpu_bf16_patches.py)** and **[`scripts/patches/apply_sglang_bf16_patches.py`](scripts/patches/apply_sglang_bf16_patches.py)**:
 
-#### Detail A: Non-Standard `hidden_size = 2880` vs. TPU MXU `128 × 128` Hardware Tiles (`3.2x` Speedup on `vllm-torchtpu`)
+#### Detail A: Non-Standard `hidden_size = 2880` vs. TPU MXU `128 × 128` Hardware Tiles (`3.2x` Lower `22k/4k` TPOT on `vllm-torchtpu`)
 - **The Hardware Rule**: TPU Matrix Multiply Units (MXUs) and Pallas grouped-matmul (`gmm_v2`) MoE kernels operate on **`128 × 128` hardware tiles**, requiring both the input/output hidden dimension (`H`) and intermediate MoE dimension (`I`) of expert weight tensors to be **exact multiples of `128`**.
 - **Why `GPT-OSS 120B` Triggers This**: Almost all standard LLMs use a `hidden_size` divisible by `128` (e.g., `2048 = 16×128`, `4096 = 32×128`, `5120 = 40×128`). However, **`GPT-OSS 120B` has `hidden_size = 2880`**, which is **`22.5 × 128`** — leaving an unaligned remainder of **`64` columns** (`2944 = 23 × 128` is the next multiple of `128`).
 - **What Upstream `vllm-torchtpu` Missed**:
@@ -137,9 +137,12 @@ When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
   - **Before vs. After Impact on `vllm-torchtpu`**:
     | Metric on `vllm-torchtpu` (`lmsys/gpt-oss-120b-bf16`) | Unpatched Upstream (`H = 2880` Unaligned) | With Load-Time Patch (`H = 2880 -> 2944`) | Improvement |
     |---|---|---|---|
-    | **Pallas `gmm_v2` Memory Access** | Reads `64` uninitialized trailing lanes per row (`NaN` logits -> all tokens collapse onto Expert 0) | 100% aligned `23 × 128` tiles; balanced `top-4` routing across all `128` experts | **Fixes silent `NaN` / expert collapse** |
-    | **Single-Stream Decode Latency (`TPOT`)** | `18.80 ms` (`53.2 tok/s`) | **`5.30–5.95 ms`** (`168–188 tok/s`) | **`3.2x–3.5x` Faster Decode** |
-    | **`1k / 1k` Peak Output Throughput (`1` Host)** | `~680 tok/s` (degraded outputs) | **`2,284.8 tok/s`** (100% coherent outputs) | **`3.36x` Higher Throughput** |
+    | **Expert Weight Shapes (server log)** | `w13=[16, 2880, 5888]`, `w2=[16, 2944, 2880]` (`H` unpadded) | `w13=[16, 2944, 5888]`, `w2=[16, 2944, 2944]` (`H` padded) | `128`-aligned tiles |
+    | **Sanity-Prompt Outputs** | Every response is a run of `!` tokens | Coherent answers | Correct outputs require the patch |
+    | **Single-Stream Decode Latency (`TPOT` P50, `22k / 4k`, `CON=1`, `n=12`)** | `18.83 ms` | **`5.95 ms`** | **`3.2x` lower** (derived) |
+    | **`1k / 1k` Output Throughput (`CON=32`, `n=96`, `1` Host)** | `1,350.2 tok/s` | **`2,243.0 tok/s`** | `1.66x` (derived) |
+
+    Raw runs (BF16 KV, identical server arguments): without the patch [`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z`](results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z) (includes `server_log_excerpt.txt`), with the patch [`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z`](results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z).
 
 #### Detail B: Standard Hugging Face BF16 Tensor Mapping & `swigluoai` Deinterleaving on `sglang-torchtpu`
 - Because OpenAI originally released `gpt-oss-120b` only in MXFP4, upstream `sglang/srt/models/gpt_oss.py` only implemented weight loading for MXFP4 block/scale tensor names (`gate_up_proj_blocks`).
@@ -158,7 +161,7 @@ When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
 .
 ├── README.md                                     # Architecture, benchmark summary & TorchTPU deep dive
 ├── INFRA_SETUP.md                                # Step-by-step GKE + DWS Calendar Mode Reservation guide
-├── BENCHMARK_RESULTS.md                          # Complete 1h, 2h, and 4h benchmark tables & sizing guide
+├── BENCHMARK_RESULTS.md                          # Complete 1h, 2h, and 4h benchmark tables & measured SLA goodput
 ├── configs/                                      # Reproducible JSON benchmark configs
 │   ├── bf16/                                     # Native BF16 configs across sglang-torchtpu, vllm-torchtpu & vllm-tpu
 │   └── ...                                       # MXFP4 configs across 1h, 2h, and 4h topologies
@@ -174,7 +177,7 @@ When running [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
 └── scripts/
     ├── patches/                                  # Runtime patches for Native BF16 serving on TorchTPU
     │   ├── apply_sglang_bf16_patches.py          # FusedMoE BF16 weight layout & swigluoai deinterleaving
-    │   ├── apply_vllm_torchtpu_bf16_patches.py   # Pallas hidden_size (2880->2944) padding (3.2x decode speedup)
+    │   ├── apply_vllm_torchtpu_bf16_patches.py   # Pallas hidden_size (2880->2944) padding (3.2x lower 22k/4k TPOT)
     │   └── README.md                             # Detailed architectural & code-level patch documentation
     ├── stage_hf_to_gcs.py                        # Multi-threaded HF -> GCS weight streamer
     ├── run_v7x_bench.py                          # Unified server launcher, warmup verifier & bench runner

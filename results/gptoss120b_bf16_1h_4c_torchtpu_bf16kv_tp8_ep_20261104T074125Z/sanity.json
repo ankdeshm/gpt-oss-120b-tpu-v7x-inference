@@ -1,0 +1,38 @@
+[
+  {
+    "prompt": "Explain in two sentences why optical interconnects improve distributed tensor parallelism.",
+    "output": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+    "usage": {
+      "prompt_tokens": 15,
+      "total_tokens": 143,
+      "completion_tokens": 128,
+      "prompt_tokens_details": null,
+      "completion_tokens_details": null
+    },
+    "latency_s": 2.28
+  },
+  {
+    "prompt": "If an investment of $4,000 earns 5% simple interest per year, how much interest is earned in 3 years?",
+    "output": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+    "usage": {
+      "prompt_tokens": 27,
+      "total_tokens": 155,
+      "completion_tokens": 128,
+      "prompt_tokens_details": null,
+      "completion_tokens_details": null
+    },
+    "latency_s": 2.41
+  },
+  {
+    "prompt": "Write a concise Python function `is_prime(n: int) -> bool`.",
+    "output": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+    "usage": {
+      "prompt_tokens": 15,
+      "total_tokens": 143,
+      "completion_tokens": 128,
+      "prompt_tokens_details": null,
+      "completion_tokens_details": null
+    },
+    "latency_s": 2.28
+  }
+]

@@ -9,8 +9,8 @@ This directory contains the lightweight startup scripts (`apply_vllm_torchtpu_bf
 | Serving Stack | `openai/gpt-oss-120b` (`65.3 GB` Native MXFP4) | `lmsys/gpt-oss-120b-bf16` (`233.7 GB` Pure Unquantized BF16) | Runtime Patch Required? |
 |---|---|---|---|
 | **`sglang-torchtpu`** *(PyTorch + Pallas)* | **Works Out-of-the-Box** (`TP=8, EP=8`)<br>`737.0 ms` TTFT (`22k`), `4.09 ms` TPOT | **Works with Load-Time Patch** (`TP=8, EP=8`)<br>`739.5 ms` TTFT (`22k`), `4.97 ms` TPOT, `5,084.5` tok/s (`2` hosts) | **MXFP4**: None<br>**BF16**: `python3 scripts/patches/apply_sglang_bf16_patches.py` |
-| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Works with Load-Time Patch** (`TP=8, EP=true`)<br>`877.1 ms` TTFT (`22k`), `5.30–5.95 ms` TPOT, `2,284.8` tok/s (`1` host) | **BF16**: `python3 scripts/patches/apply_vllm_torchtpu_bf16_patches.py` |
-| **`vllm-tpu`** *(JAX `tpu-inference`)* | **Works Out-of-the-Box** (`TP=2, DP=4` per host)<br>`5,847.0` tok/s (`1` host) -> `20,366.9` tok/s (`4` hosts) | **Works Out-of-the-Box** (`TP=8, --enable-expert-parallel`)<br>`880.3 ms` TTFT (`22k`), `8.21–8.48 ms` TPOT, `2,540.3` tok/s (`1` host) | **None** (Zero patches for both MXFP4 and BF16) |
+| **`vllm-torchtpu`** *(PyTorch / XLA + Pallas)* | **Not Supported Upstream Yet**<br>(`ValueError: gpt_oss_mxfp4 quantization is currently not supported in tpu`) | **Works with Load-Time Patch** (`TP=8, EP=true`)<br>`878.7 ms` TTFT, `5.95 ms` TPOT (`22k/4k`, `CON=1`), `2,243.0` tok/s (`1k/1k`, `1` host, `CON=32`); BF16 KV | **BF16**: `python3 scripts/patches/apply_vllm_torchtpu_bf16_patches.py` |
+| **`vllm-tpu`** *(JAX `tpu-inference`)* | **Works Out-of-the-Box** (`TP=2, DP=4` per host)<br>`5,847.0` tok/s (`1` host) -> `20,366.9` tok/s (`4` hosts) | **Works Out-of-the-Box** (`TP=8, --enable-expert-parallel`)<br>`880.5 ms` TTFT, `8.54 ms` TPOT (`22k/4k`, `CON=1`), `2,463.7` tok/s (`1k/1k`, `1` host, `CON=32`); BF16 KV | **None** (Zero patches for both MXFP4 and BF16) |
 
 ---
 
@@ -39,7 +39,7 @@ When loading [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
    - **Root Cause**: TPU Matrix Multiply Units (MXUs) and Pallas grouped-matmul (`gmm_v2`) kernels require both matrix dimensions of MoE expert weights (`intermediate_size` and `hidden_size`) to be **exact multiples of `128`**.
    - While almost all LLMs have a `hidden_size` divisible by `128` (`4096`, `5120`, etc.), **`GPT-OSS 120B` has `hidden_size = 2880`**, which is **`22.5 × 128`** (leaving an unaligned remainder of `64` columns).
    - In `VllmUnquantizedFusedMoEMethod.process_weights_after_loading`, upstream `vllm-torchtpu` padded `intermediate_size` to a multiple of `128`, **but forgot to pad `hidden_size` (`2880 -> 2944`, `+64` zero columns)**.
-   - Without padding `hidden_size`, Pallas `gmm_v2` reads `64` uninitialized HBM lanes past the end of every row, corrupting MoE layer outputs into `NaN`s and causing router logits to collapse all tokens onto Expert 0 (`18.80 ms` TPOT).
+   - Without padding `hidden_size`, Pallas `gmm_v2` reads `64` uninitialized HBM lanes past the end of every row, corrupting MoE layer outputs into `NaN`s and causing router logits to collapse all tokens onto Expert 0. In the unpatched run (`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z`) every sanity prompt returned only `!` tokens, at `18.83 ms` TPOT P50 (`22k/4k`, `CON=1`).
    - **The 6-Line Fix**:
      ```python
      pad_H = (128 - (H % 128)) % 128  # 64 columns (pads 2880 -> 2944 = 23 * 128)
@@ -49,7 +49,7 @@ When loading [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
          if w2_bias is not None:
              w2_bias = torch.nn.functional.pad(w2_bias, (0, pad_H))         # [16, 2880]       -> [16, 2944]
      ```
-   - **Result**: Outputs are 100% coherent, expert routing is balanced across all `128` experts, and **single-stream decode latency drops `3.2x–3.5x` from `18.80 ms` down to `5.30–5.95 ms` TPOT (`2,284.8` out tok/s on `1k/1k`)**!
+   - **Result**: Sanity outputs are coherent, and **`22k/4k` `CON=1` TPOT P50 drops from `18.83 ms` to `5.95 ms` (`3.2x`, derived; `results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z`), with `2,243.0` out tok/s on `1k/1k` at `CON=32` (BF16 KV)**.
 
 2. **Attention Head Dimension Alignment (`vllm_torchtpu/layers/adapter/attention.py`)**:
    - `GPT-OSS 120B` uses `head_size = 64` (`64` query heads, `8` KV heads). Preserves `pool_head_dim = 64` in `PallasAttentionBackendImpl` (`FLASH_ATTN` `hd64` layout).

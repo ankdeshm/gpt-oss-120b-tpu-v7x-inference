@@ -7,7 +7,7 @@ Fixes three upstream issues when serving unquantized BF16 GPT-OSS 120B (`quantiz
 2. `vllm_torchtpu/layers/adapter/attention.py` (`PallasAttentionBackendImpl`):
    - Preserves `pool_head_dim = 64` for `head_size=64` with `FLASH_ATTN` (`hd64` Pallas RPA layout) when `kv_cache.shape[-1] == 128`.
 3. `vllm_torchtpu/layers/adapter/quantization/unquantized.py` (`VllmUnquantizedFusedMoEMethod.process_weights_after_loading`):
-   - Pads `hidden = w13_weight.shape[1]` (`2880 -> 2944`, multiple of `128`) on `w13_weight`, `w2_weight`, and `w2_bias` to match `fused_moe_gmm.py` activation padding (`padded_hidden_size = w1.shape[1]`), eliminating out-of-bounds Pallas GMM lane reads and improving decode TPOT by `3.7x` (`18.8 ms -> 5.15 ms`).
+   - Pads `hidden = w13_weight.shape[1]` (`2880 -> 2944`, multiple of `128`) on `w13_weight`, `w2_weight`, and `w2_bias` to match `fused_moe_gmm.py` activation padding (`padded_hidden_size = w1.shape[1]`), eliminating out-of-bounds Pallas GMM lane reads (22k/4k CON=1 TPOT P50: 18.83 ms without this patch -> 5.95 ms with it, 3.2x).
 """
 from __future__ import annotations
 

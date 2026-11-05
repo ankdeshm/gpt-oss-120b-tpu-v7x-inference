@@ -72,7 +72,7 @@ Each `tpu7x` host (`4` physical chips = `8` TensorCores) runs `4` data-parallel 
    - Highest measured `1k/1k` output throughput at 2 hosts: **`5,567.6 tok/s`** (`CON=128`, BF16 KV). At 1 host: **`2,463.7 tok/s`** (`CON=32`, BF16 KV; `2,540.3 tok/s` with FP8 KV, optional).
 2. **`vllm-torchtpu` (PyTorch / XLA with `scripts/patches/apply_vllm_torchtpu_bf16_patches.py`)**:
    - Upstream unquantized MoE reads non-128-aligned `hidden_size = 2880`. The runtime patch pads `hidden_size` (`2880 -> 2944`, multiple of 128) on `w13_weight`, `w2_weight`, and `w2_bias` in `VllmUnquantizedFusedMoEMethod.process_weights_after_loading`.
-   - **Performance Impact**: Eliminates Pallas out-of-bounds lane reads, dropping single-stream decode TPOT **`3.2x` from `18.8 ms` down to `5.30–5.95 ms`** (BF16 KV, `CON=1`, `1k/1k` and `22k/4k`).
+   - **Performance Impact**: Eliminates Pallas out-of-bounds lane reads. At `22k/4k` `CON=1` (`n=12`, BF16 KV, identical server arguments), TPOT P50 is **`18.83 ms`** without the patch (`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z`; every sanity prompt returned only `!` tokens) and **`5.95 ms`** with it (`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z`): **`3.2x`** lower (derived).
 3. **`sglang-torchtpu` (PyTorch / Pallas with `scripts/patches/apply_sglang_bf16_patches.py`)**:
    - Upstream SGLang expects fused expert tensors transposed and deinterleaved. The runtime patch maps `gate_up_proj` and `down_proj`, transposes `[-2, -1]` to match `FusedMoE`, and deinterleaves `swigluoai` gate/up channels (`::2`, `1::2`) prior to 128-boundary tile padding.
    - **Latency Champion**: Achieves the fastest single-stream decode (**`4.97 ms` TPOT**, `201.2 tok/s` per stream) and fastest prefill (**`739.5 ms` TTFT** for `22,000` tokens).
@@ -143,16 +143,28 @@ The 2-host run also covered `RPS=6.0` (`1,507.1` out tok/s, `n=60`) and `CON=128
 
 ---
 
-## 5. Capacity Sizing Guide for Sustained `6.0 RPS` on `22,000 / 4,000`
+## 5. Measured SLA Goodput at `22,000 / 4,000`
 
-Generating `4,000` tokens per request at `6.0 RPS` requires sustaining **`24,000` output tok/s** and **`132,000` prefill tok/s** (`156,000` total tok/s) continuously without request queue growth:
+For each configuration: the highest measured goodput (requests that met `TTFT <= 500 ms`, `TPOT <= 10 ms` and `E2EL <= 60 s`) across the closed-loop (`CON`) and open-loop (`RPS`) `22k / 4k` cells, the cell where it was reached, and the P95 verdict for each SLA in that cell (E2E target `40–60 s`, evaluated as P95 `<= 60 s`). Goodput out tok/s/chip is derived (goodput req/s × `4,000` output tokens ÷ chips). Where no cell had a request that met all three SLAs, the verdicts are shown for the `CON=1` cell.
 
-1. **Throughput-Optimal Fleet (`openai/gpt-oss-120b` MXFP4, `vllm-tpu` JAX `TP=2, DP=4, FP8 KV`)**:
-   - At Open-Loop `6.0 RPS` (`gptoss120b_4h_16c_vllmtpu_fp8kv_tp2dp4`): **`1.391 req/s`** (`5,564.6 out tok/s`, `TPOT P95 = 9.96 ms`, `E2E P95 = 41.11 s`).
-   - Sizing: `18 hosts` (`72 chips` / `144 TensorCores`) sustains full `6.0 RPS` with strict P95 SLAs.
-2. **Ultra-Low Latency Fleet (`lmsys/gpt-oss-120b-bf16` BF16, `sglang-torchtpu` `TP=8, EP=8`)**:
-   - Single-stream decode: **`4.97 ms` TPOT**, `20.6 s` E2E for 4,000 tokens.
-   - Sizing: Deploy stateless 4-chip (`TP=8, EP=8`) replicas fronted by `scripts/lb_proxy.py` to linearly scale capacity while preserving sub-5ms decode. Sustaining `6.0 RPS` on `22k/4k` requires `11 hosts` (`44 chips` / `88 TensorCores`).
+| Configuration | Chips | Max Goodput (`req/s`) | Goodput Out tok/s/chip (derived) | Reached At | TTFT P95 `<= 500 ms` | TPOT P95 `<= 10 ms` | E2E P95 `<= 60 s` |
+|---|---:|---:|---:|---|---|---|---|
+| `sglang-torchtpu` `TP=8, EP=8`, BF16 weights + BF16 KV | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=12`) | missed (`742.9 ms`) | met (`5.06 ms`) | met (`20.96 s`) |
+| `sglang-torchtpu` `TP=8, EP=8` + `EAGLE3`, BF16 weights + BF16 KV | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=12`) | missed (`774.5 ms`) | met (`5.96 ms`) | met (`24.59 s`) |
+| `vllm-torchtpu` `TP=8, DP=1, EP=true`, BF16 weights + BF16 KV | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=12`) | missed (`890.5 ms`) | met (`5.99 ms`) | met (`24.84 s`) |
+| `vllm-tpu` `TP=8, DP=1, EP=true`, BF16 weights + BF16 KV | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=12`) | missed (`927.9 ms`) | met (`8.70 ms`) | met (`35.67 s`) |
+| `2x sglang-torchtpu` `TP=8, EP=8`, BF16 weights + BF16 KV | `8` | `0` | `0` | none (verdicts at `CON=1`, `n=10`) | missed (`790.8 ms`) | met (`5.16 ms`) | met (`21.43 s`) |
+| `2x vllm-tpu` `TP=8, DP=1, EP=true`, BF16 weights + BF16 KV | `8` | `0` | `0` | none (verdicts at `CON=1`, `n=10`) | missed (`889.0 ms`) | met (`6.05 ms`) | met (`25.06 s`) |
+| BF16 weights + BF16 KV, 4 hosts | `16` | not measured | not measured | – | not measured | not measured | not measured |
+| `vllm-torchtpu` `TP=8, DP=1, EP=true`, BF16 weights + FP8 KV — optional (non-BF16) | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=12`) | missed (`882.1 ms`) | met (`6.01 ms`) | met (`24.89 s`) |
+| `vllm-tpu` `TP=8, DP=1, EP=true`, BF16 weights + FP8 KV — optional (non-BF16) | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=12`) | missed (`924.5 ms`) | met (`8.74 ms`) | met (`35.82 s`) |
+| `vllm-tpu` `TP=2, DP=4`, MXFP4 experts + FP8 KV — optional (non-BF16) | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=20`) | missed (`1,283.1 ms`) | met (`5.71 ms`) | met (`24.14 s`) |
+| `sglang-torchtpu` `TP=8, EP=8`, MXFP4 experts + FP8 KV — optional (non-BF16) | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=16`) | missed (`742.1 ms`) | met (`4.14 ms`) | met (`17.29 s`) |
+| `sglang-torchtpu` `TP=8, EP=8` + `EAGLE3`, MXFP4 experts + FP8 KV — optional (non-BF16) | `4` | `0` | `0` | none (verdicts at `CON=1`, `n=16`) | missed (`756.8 ms`) | met (`6.07 ms`) | met (`25.00 s`) |
+| `2x vllm-tpu` `TP=2, DP=4`, MXFP4 experts + FP8 KV — optional (non-BF16) | `8` | `0` | `0` | none (verdicts at `CON=1`, `n=10`) | missed (`1,400.8 ms`) | met (`5.71 ms`) | met (`24.18 s`) |
+| `4x vllm-tpu` `TP=2, DP=4`, MXFP4 experts + FP8 KV — optional (non-BF16) | `16` | `0` | `0` | none (verdicts at `CON=1`, `n=10`) | missed (`1,397.1 ms`) | met (`5.72 ms`) | met (`24.25 s`) |
+
+At `22k / 4k`, every measured configuration missed the `500 ms` TTFT SLA, including at `CON=1`, while TPOT and E2E were met at `CON=1`.
 
 ---
 
