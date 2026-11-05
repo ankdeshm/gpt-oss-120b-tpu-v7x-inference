@@ -39,7 +39,7 @@ When loading [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
    - **Root Cause**: TPU Matrix Multiply Units (MXUs) and Pallas grouped-matmul (`gmm_v2`) kernels require both matrix dimensions of MoE expert weights (`intermediate_size` and `hidden_size`) to be **exact multiples of `128`**.
    - While almost all LLMs have a `hidden_size` divisible by `128` (`4096`, `5120`, etc.), **`GPT-OSS 120B` has `hidden_size = 2880`**, which is **`22.5 × 128`** (leaving an unaligned remainder of `64` columns).
    - In `VllmUnquantizedFusedMoEMethod.process_weights_after_loading`, upstream `vllm-torchtpu` padded `intermediate_size` to a multiple of `128`, **but forgot to pad `hidden_size` (`2880 -> 2944`, `+64` zero columns)**.
-   - Without padding `hidden_size`, Pallas `gmm_v2` reads `64` uninitialized HBM lanes past the end of every row, corrupting MoE layer outputs into `NaN`s and causing router logits to collapse all tokens onto Expert 0. In the unpatched run (`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z`) every sanity prompt returned only `!` tokens, at `18.83 ms` TPOT P50 (`22k/4k`, `CON=1`).
+   - Without padding `hidden_size`, Pallas `gmm_v2` reads `64` uninitialized HBM lanes past the end of every row, corrupting MoE layer outputs into `NaN`s and causing router logits to collapse all tokens onto Expert 0. In the unpatched run the server log shows the unpadded hidden dimension (`w13=[16, 2880, 5888]` instead of `[16, 2944, 5888]`) and every sanity prompt returned only `!` tokens (raw record `results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z`, invalid output; not a performance baseline).
    - **The 6-Line Fix**:
      ```python
      pad_H = (128 - (H % 128)) % 128  # 64 columns (pads 2880 -> 2944 = 23 * 128)
@@ -49,7 +49,7 @@ When loading [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-12
          if w2_bias is not None:
              w2_bias = torch.nn.functional.pad(w2_bias, (0, pad_H))         # [16, 2880]       -> [16, 2944]
      ```
-   - **Result**: Sanity outputs are coherent, and **`22k/4k` `CON=1` TPOT P50 drops from `18.83 ms` to `5.95 ms` (`3.2x`, derived; `results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z`), with `2,243.0` out tok/s on `1k/1k` at `CON=32` (BF16 KV)**.
+   - **Result**: This is a correctness fix. With the patch, sanity outputs are coherent (`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z`); without it, the output is invalid (only `!` tokens). All `vllm-torchtpu` performance results use the patched configuration.
 
 2. **Attention Head Dimension Alignment (`vllm_torchtpu/layers/adapter/attention.py`)**:
    - `GPT-OSS 120B` uses `head_size = 64` (`64` query heads, `8` KV heads). Preserves `pool_head_dim = 64` in `PallasAttentionBackendImpl` (`FLASH_ATTN` `hd64` layout).

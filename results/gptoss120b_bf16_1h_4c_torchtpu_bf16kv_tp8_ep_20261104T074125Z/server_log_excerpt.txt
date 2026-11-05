@@ -1,4 +1,4 @@
-# server.log excerpt, run gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z (vllm-torchtpu, lmsys/gpt-oss-120b-bf16, BF16 KV, without the load-time BF16 patch)
+# server.log excerpt, run gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T074125Z (vllm-torchtpu, lmsys/gpt-oss-120b-bf16, BF16 KV, without the load-time BF16 patch) — invalid output; not a performance baseline
 (Worker_TP0_EP0 pid=148335) INFO 11-04 07:42:55 [unquantized.py:332] Unquantized weights transposed for GMM kernel: w13=[16, 2880, 5888], w2=[16, 2944, 2880]
 # Same log line, run gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_20261104T100207Z (identical server arguments, with scripts/patches/apply_vllm_torchtpu_bf16_patches.py)
 (Worker_TP0_EP0 pid=1130) INFO 11-04 10:04:15 [unquantized.py:341] Unquantized weights transposed for GMM kernel: w13=[16, 2944, 5888], w2=[16, 2944, 2944]
