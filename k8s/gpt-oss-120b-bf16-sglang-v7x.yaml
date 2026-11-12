@@ -1,0 +1,104 @@
+---
+# Native BF16 (`lmsys/gpt-oss-120b-bf16`) Deployment on Google Cloud Ironwood TPU (`tpu7x`)
+# Engine: sglang-torchtpu (TP=8, EP=8, bfloat16 weights + bfloat16 KV cache per 4-chip host)
+# Optional: append EAGLE3 flags in EXTRA_ARGS for speculative decoding (`lmsys/EAGLE3-gpt-oss-120b-bf16`)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-oss-120b-bf16-sglang-v7x
+  namespace: default
+  labels:
+    app: gpt-oss-120b-bf16-sglang-v7x
+    engine: sglang-torchtpu
+    precision: bf16
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gpt-oss-120b-bf16-sglang-v7x
+  template:
+    metadata:
+      labels:
+        app: gpt-oss-120b-bf16-sglang-v7x
+        engine: sglang-torchtpu
+        precision: bf16
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/cpu-limit: "0"
+        gke-gcsfuse/memory-limit: "0"
+        gke-gcsfuse/ephemeral-storage-limit: "0"
+    spec:
+      nodeSelector:
+        cloud.google.com/tpu-accelerator: tpu7x
+        cloud.google.com/tpu-topology: 2x2x1
+      tolerations:
+        - key: google.com/tpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: sglang-server
+          image: us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/vllm/sglang-torchtpu-diffusion:v0.2.0
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /dev/shm/models /dev/shm/torch_tpu_tier3
+              python3 /models/scripts/patches/apply_sglang_bf16_patches.py
+              export FORCE_SINGLE_HOST=1
+              export SGLANG_TPU_FUSED_MOE_SC_GATHER=0
+              export TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS=false
+              export TORCH_TPU_TIER3_ROOT=/dev/shm/torch_tpu_tier3
+              export MODEL=/models/models/lmsys/gpt-oss-120b-bf16
+              export HOST=0.0.0.0 PORT=8000 TP_SIZE=8 EP_SIZE=8
+              export QUANTIZATION="" KV_CACHE_DTYPE=bfloat16
+              export ATTENTION_BACKEND=pallas_tpu_rpa_v3 PAGE_SIZE=64
+              export CONTEXT_LEN=32768 CHUNKED_PREFILL_SIZE=8192 MAX_PREFILL_TOKENS=8192 MAX_TOTAL_TOKENS=524288
+              export MEM_FRACTION_STATIC=0.74 CONC=32 MAX_RUNNING=32 TORCH_COMPILE_MAX_BS=32
+              export TPU_COMPILE_BS="1 2 4 6 8 16 32" TPU_COMPILE_TOKENS="512 2048 4096 8192"
+              export DISABLE_RADIX_CACHE=1 ENABLE_TORCH_COMPILE=1 ENABLE_METRICS=1 DUMP_META=0
+              export EXTRA_ARGS="--tpu-compile-tracer direct --served-model-name openai/gpt-oss-120b --reasoning-parser gpt-oss --watchdog-timeout 7200"
+              exec bash /workspace/sglang/benchmark/tpu/launch_server.sh
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 15
+          resources:
+            requests:
+              google.com/tpu: "4"
+              cpu: "96"
+              memory: "420Gi"
+            limits:
+              google.com/tpu: "4"
+          volumeMounts:
+            - name: models-gcs
+              mountPath: /models
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: models-gcs
+          persistentVolumeClaim:
+            claimName: tpu-v7x-models-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 700Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt-oss-120b-bf16-sglang-service
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: gpt-oss-120b-bf16-sglang-v7x
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

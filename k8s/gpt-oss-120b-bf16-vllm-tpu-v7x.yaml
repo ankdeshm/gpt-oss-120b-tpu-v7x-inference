@@ -1,0 +1,114 @@
+---
+# Native BF16 (`lmsys/gpt-oss-120b-bf16`) Deployment on Google Cloud Ironwood TPU (`tpu7x`)
+# Engine: vllm-tpu (JAX / tpu-inference, TP=8, EP=true, bfloat16 weights + bfloat16 KV cache per 4-chip host)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-oss-120b-bf16-vllm-tpu-v7x
+  namespace: default
+  labels:
+    app: gpt-oss-120b-bf16-vllm-tpu-v7x
+    engine: vllm-tpu
+    precision: bf16
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gpt-oss-120b-bf16-vllm-tpu-v7x
+  template:
+    metadata:
+      labels:
+        app: gpt-oss-120b-bf16-vllm-tpu-v7x
+        engine: vllm-tpu
+        precision: bf16
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/cpu-limit: "0"
+        gke-gcsfuse/memory-limit: "0"
+        gke-gcsfuse/ephemeral-storage-limit: "0"
+    spec:
+      nodeSelector:
+        cloud.google.com/tpu-accelerator: tpu7x
+        cloud.google.com/tpu-topology: 2x2x1
+      tolerations:
+        - key: google.com/tpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm-tpu-server
+          image: us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/vllm/vllm-tpu-bench:v0.32.0
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /models/xla-cache/vllmtpu-bf16-shared
+              export TPU_BACKEND_TYPE=jax
+              export MODEL_IMPL_TYPE=vllm
+              export USE_BATCHED_RPA_KERNEL=1
+              export JAX_GC_POST_COMPILE=true
+              export JAX_THREE_PHASE_DEALLOCATION=true
+              export VLLM_ENGINE_READY_TIMEOUT_S=7200
+              export VLLM_XLA_CACHE_PATH=/models/xla-cache/vllmtpu-bf16-shared
+              export MOE_TC_PERMUTE=1
+              exec python3 -m vllm.entrypoints.openai.api_server \
+                --host=0.0.0.0 \
+                --port=8000 \
+                --model=/models/models/lmsys/gpt-oss-120b-bf16 \
+                --served-model-name=openai/gpt-oss-120b \
+                --dtype=bfloat16 \
+                --tensor-parallel-size=8 \
+                --data-parallel-size=1 \
+                --enable-expert-parallel \
+                --max-model-len=32768 \
+                --max-num-batched-tokens=16384 \
+                --max-num-seqs=64 \
+                --enable-chunked-prefill \
+                --no-enable-prefix-caching \
+                --trust-remote-code \
+                --kv-cache-dtype=auto \
+                --async-scheduling \
+                --gpu-memory-utilization=0.86
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 15
+          resources:
+            requests:
+              google.com/tpu: "4"
+              cpu: "96"
+              memory: "420Gi"
+            limits:
+              google.com/tpu: "4"
+          volumeMounts:
+            - name: models-gcs
+              mountPath: /models
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: models-gcs
+          persistentVolumeClaim:
+            claimName: tpu-v7x-models-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 700Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt-oss-120b-bf16-vllm-tpu-service
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: gpt-oss-120b-bf16-vllm-tpu-v7x
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

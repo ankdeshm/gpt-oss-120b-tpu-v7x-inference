@@ -1,0 +1,192 @@
+{
+  "name": "gptoss120b_1h_4c_vllmtpu_fp8kv_tp8",
+  "model_family": "openai/gpt-oss-120b",
+  "framework": "vllm-tpu (JAX / tpu-inference)",
+  "precision": "mxfp4 moe / bf16 attn, fp8 kv",
+  "topology": "1 host (4 chips / 8 TensorCores), TP=8, DP=1",
+  "hosts": 1,
+  "chips": 4,
+  "port": 8000,
+  "ready_timeout_s": 5400,
+  "keep_server_alive": false,
+  "tpu_env_mode": "gke_single_host",
+  "served_model": "openai/gpt-oss-120b",
+  "tokenizer_dir": "/dev/shm/models/gpt-oss-120b",
+  "stage": [],
+  "mkdirs": [
+    "/models/xla-cache/vllm-tpu-gptoss-fp8kv-tp8"
+  ],
+  "env": {
+    "TPU_BACKEND_TYPE": "jax",
+    "MODEL_IMPL_TYPE": "vllm",
+    "USE_BATCHED_RPA_KERNEL": "1",
+    "JAX_GC_POST_COMPILE": "true",
+    "JAX_THREE_PHASE_DEALLOCATION": "true",
+    "VLLM_ENGINE_READY_TIMEOUT_S": "7200",
+    "VLLM_XLA_CACHE_PATH": "/models/xla-cache/vllm-tpu-gptoss-fp8kv-tp8",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1"
+  },
+  "argv": [
+    "python3",
+    "-m",
+    "vllm.entrypoints.openai.api_server",
+    "--host=0.0.0.0",
+    "--port=8000",
+    "--model=/dev/shm/models/gpt-oss-120b",
+    "--served-model-name=openai/gpt-oss-120b",
+    "--tensor-parallel-size=8",
+    "--data-parallel-size=1",
+    "--max-model-len=32768",
+    "--max-num-batched-tokens=24576",
+    "--max-num-seqs=64",
+    "--enable-chunked-prefill",
+    "--no-enable-prefix-caching",
+    "--trust-remote-code",
+    "--kv-cache-dtype=fp8",
+    "--async-scheduling",
+    "--gpu-memory-utilization=0.88"
+  ],
+  "cells": [
+    {
+      "suite": "smoke",
+      "isl": 1024,
+      "osl": 21,
+      "concurrency": 1,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "smoke",
+      "isl": 1024,
+      "osl": 21,
+      "concurrency": 8,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 6,
+      "num_prompts": 50,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 16,
+      "num_prompts": 50,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 32,
+      "num_prompts": 50,
+      "rps": "inf"
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 0.5,
+      "num_prompts": 32
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 1.0,
+      "num_prompts": 50
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 2.0,
+      "num_prompts": 50
+    },
+    {
+      "suite": "long_ol",
+      "isl": 22000,
+      "osl": 4000,
+      "rps": 6.0,
+      "num_prompts": 50
+    },
+    {
+      "suite": "long_cl",
+      "isl": 22000,
+      "osl": 4000,
+      "concurrency": 1,
+      "num_prompts": 20,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 1,
+      "num_prompts": 32,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 8,
+      "num_prompts": 64,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 32,
+      "num_prompts": 128,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_1k1k",
+      "isl": 1024,
+      "osl": 1024,
+      "concurrency": 64,
+      "num_prompts": 128,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 1,
+      "num_prompts": 20,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 8,
+      "num_prompts": 48,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 32,
+      "num_prompts": 64,
+      "rps": "inf"
+    },
+    {
+      "suite": "ref_8k1k",
+      "isl": 8192,
+      "osl": 1024,
+      "concurrency": 64,
+      "num_prompts": 96,
+      "rps": "inf"
+    }
+  ]
+}

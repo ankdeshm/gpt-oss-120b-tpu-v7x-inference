@@ -1,0 +1,154 @@
+---
+# PersistentVolume & PVC backed by Cloud Storage FUSE (ReadWriteMany)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: tpu-v7x-models-pv
+spec:
+  accessModes: ["ReadWriteMany"]
+  capacity:
+    storage: 10Ti
+  storageClassName: tpu-gcsfuse-sc
+  mountOptions:
+    - implicit-dirs
+    - metadata-cache:ttl-secs:-1
+    - metadata-cache:stat-cache-max-size-mb:-1
+    - metadata-cache:type-cache-max-size-mb:-1
+    - file-cache:max-size-mb:-1
+    - file-system:kernel-list-cache-ttl-secs:-1
+    - read_ahead_kb=131072
+  csi:
+    driver: gcsfuse.csi.storage.gke.io
+    volumeHandle: <YOUR_GCS_BUCKET>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tpu-v7x-models-pvc
+  namespace: default
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: tpu-gcsfuse-sc
+  volumeName: tpu-v7x-models-pv
+  resources:
+    requests:
+      storage: 10Ti
+---
+# 4 x tpu7x-standard-4t (16 physical Ironwood chips = 32 TensorCores) Deployment
+# Scale `replicas` to 1 (4 chips), 2 (8 chips), or 4 (16 chips) to match slice capacity.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-oss-120b-vllm-tpu-v7x
+  namespace: default
+  labels:
+    app: gpt-oss-120b-v7x
+    engine: vllm-tpu
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: gpt-oss-120b-v7x
+  template:
+    metadata:
+      labels:
+        app: gpt-oss-120b-v7x
+        engine: vllm-tpu
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/cpu-limit: "0"
+        gke-gcsfuse/memory-limit: "0"
+        gke-gcsfuse/ephemeral-storage-limit: "0"
+    spec:
+      nodeSelector:
+        cloud.google.com/tpu-accelerator: tpu7x
+        cloud.google.com/tpu-topology: 2x2x1
+      tolerations:
+        - key: google.com/tpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm-server
+          image: vllm/vllm-tpu:latest
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /models/xla-cache/vllm-tpu-gptoss120b
+              exec python3 -m vllm.entrypoints.openai.api_server \
+                --host=0.0.0.0 \
+                --port=8000 \
+                --model=/models/models/openai/gpt-oss-120b \
+                --served-model-name=openai/gpt-oss-120b \
+                --tensor-parallel-size=2 \
+                --data-parallel-size=4 \
+                --max-model-len=32768 \
+                --max-num-batched-tokens=16384 \
+                --max-num-seqs=64 \
+                --enable-chunked-prefill \
+                --no-enable-prefix-caching \
+                --trust-remote-code \
+                --kv-cache-dtype=fp8 \
+                --async-scheduling \
+                --gpu-memory-utilization=0.86
+          env:
+            - name: TPU_BACKEND_TYPE
+              value: "jax"
+            - name: MODEL_IMPL_TYPE
+              value: "vllm"
+            - name: TPU_MULTIPROCESS_DP
+              value: "1"
+            - name: USE_BATCHED_RPA_KERNEL
+              value: "1"
+            - name: JAX_GC_POST_COMPILE
+              value: "true"
+            - name: JAX_THREE_PHASE_DEALLOCATION
+              value: "true"
+            - name: VLLM_ENGINE_READY_TIMEOUT_S
+              value: "7200"
+            - name: VLLM_XLA_CACHE_PATH
+              value: "/models/xla-cache/vllm-tpu-gptoss120b"
+          ports:
+            - containerPort: 8000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 15
+          resources:
+            requests:
+              google.com/tpu: "4"
+              cpu: "110"
+              memory: "420Gi"
+            limits:
+              google.com/tpu: "4"
+          volumeMounts:
+            - name: models-gcs
+              mountPath: /models
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: models-gcs
+          persistentVolumeClaim:
+            claimName: tpu-v7x-models-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt-oss-120b-service
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: gpt-oss-120b-v7x
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
