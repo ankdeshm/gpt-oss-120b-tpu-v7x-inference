@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # JAX vllm-tpu, GPT-OSS 120B MXFP4 on one v7x host (4 chips), measured with `vllm bench serve`.
 # Server settings are the single-host MXFP4 settings from section B (TP=2, DP=4, FP8 KV cache, async scheduling);
-# only the running-request limit per replica (MAX_NUM_SEQS) and the load points (LOADS) change between runs:
+# only the running-request limit per replica (MAX_NUM_SEQS), the prompt length (INPUT_LEN) and the load points (LOADS)
+# change between runs:
 #
 #   bash run_vllm_tpu_jax_high_load.sh                                      # 64 per replica (section B settings)
 #   MAX_NUM_SEQS=128 LOADS="256 512 1024" bash run_vllm_tpu_jax_high_load.sh
 #   MAX_NUM_SEQS=512 LOADS="512 1024 2048" bash run_vllm_tpu_jax_high_load.sh
+#   MAX_NUM_SEQS=128 INPUT_LEN=8192 LOADS="64 128 256 512" bash run_vllm_tpu_jax_high_load.sh
 #
-# Each load point sends 2x as many prompts as there are concurrent requests (1,024 tokens in, 1,024 out).
+# Each load point sends 2x as many prompts as there are concurrent requests (INPUT_LEN tokens in, 1,024 out).
 # Run inside a vllm/vllm-tpu container on a v7x host. If the node belongs to a multi-host node pool, the exports at
 # the top make the runtime use only this host's 4 chips.
 set -uo pipefail
 MODEL_PATH="${MODEL_PATH:-/models/models/openai/gpt-oss-120b}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-64}"
 LOADS="${LOADS:-64 128 256 512}"
-OUT="${OUT:-./results/vllm_tpu_jax_${MAX_NUM_SEQS}_per_replica}"
+INPUT_LEN="${INPUT_LEN:-1024}"
+OUT="${OUT:-./results/vllm_tpu_jax_isl${INPUT_LEN}_${MAX_NUM_SEQS}_per_replica}"
 export MEGASCALE_COORDINATOR_ADDRESS='' MEGASCALE_NUM_SLICES='' MEGASCALE_PORT='' MEGASCALE_SLICE_ID=''
 export TPU_PROCESS_ADDRESSES='' TPU_PROCESS_PORT='' TPU_WORKER_HOSTNAMES='' TPU_WORKER_ID=0
 export TPU_HOST_BOUNDS=1,1,1 TPU_TOPOLOGY=2x2x1 TPU_ACCELERATOR_TYPE=tpu7x-8 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1
@@ -50,7 +53,8 @@ bench() {  # isl osl concurrency prompts tag
     --save-result --result-dir "$OUT" --result-filename "$5.json"
 }
 bench 1024 1024 8 16 warmup_isl1024_osl1024_c8_n16
+K="$((INPUT_LEN / 1024))k1k"
 for c in $LOADS; do
-  bench 1024 1024 "$c" $((2 * c)) "ref_1k1k_isl1024_osl1024_c${c}_n$((2 * c))"
+  bench "$INPUT_LEN" 1024 "$c" $((2 * c)) "ref_${K}_isl${INPUT_LEN}_osl1024_c${c}_n$((2 * c))"
 done
 kill "$SRV"

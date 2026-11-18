@@ -4,7 +4,7 @@ Single-host (`4` chips) and multi-host (`8` and `16` chips) serving benchmarks f
 
 **Summary:** On unquantized BF16 (`233.7 GB`, 1 host / 4 chips), `sglang-torchtpu` (`TP=8, EP=8` with load-time `swigluoai` deinterleaving and 128-tile alignment) achieves **4.97 ms decode TPOT and 739.5 ms TTFT on `22k/4k` (1.72× faster TPOT and 16.0% lower TTFT than the 8.54 ms / 880.5 ms `vllm-tpu` JAX BF16 baseline)** and scales linearly to **5,084.5 output tok/s on `1k/1k` across 2 hosts (`2.01×` vs. 1 host at 32 requests/replica)**. `vllm-tpu` (JAX) reaches **5,567.6 output tok/s on 2-host BF16 (`CON=128`)** and **20,366.9 output tok/s on 4-host (`16`-chip) MXFP4 + FP8 KV (`3.48×` vs. 1 host)**.
 
-**Follow-up on one host (section C):** with higher request limits, JAX `vllm-tpu` gave the most throughput from 64 to 1,024 concurrent requests (up to **22,163.6 output tok/s at 1,024**, vs. 5,847.0 at 64 in section B), and `vllm-torchtpu` with a new MXFP4 load-time patch reached **24,357.1 tok/s at 4,096 requests**, at a median 160.1 ms per output token. For single requests, `sglang-torchtpu` with DFlash speculative decoding gave the lowest time per output token (3.22 ms, vs. 5.23 ms without DFlash).
+**Follow-up on one host (section C):** with higher request limits, JAX `vllm-tpu` gave the most throughput from 64 to 2,048 concurrent requests: 22,163.6 output tok/s at 1,024 (median 41.9 ms per output token) and **22,952.2 at 2,048**, vs. 5,847.0 at 64 in section B. `vllm-torchtpu` with a new MXFP4 load-time patch kept scaling to **24,357.1 tok/s at 4,096 requests**, at a median 160.1 ms per output token. For single requests, `sglang-torchtpu` with DFlash speculative decoding gave the lowest time per output token (3.22 ms, vs. 5.23 ms without DFlash).
 
 ---
 
@@ -62,6 +62,7 @@ These runs came after sections A and B, on one host (4 chips) with newer contain
 | `vllm-tpu` (JAX) same settings, newer image | vllm | – | 5,788.5 | 7,589.8 | 9,434.6 | 10,134.9 | – | – | – |
 | `vllm-tpu` (JAX) 128 per replica | vllm | – | – | – | 11,283.7 | 15,876.6 | 15,784.4 | – | – |
 | `vllm-tpu` (JAX) 512 per replica | vllm | – | – | – | – | **17,190.0** | 22,163.6 | 21,387.7 | – |
+| `vllm-tpu` (JAX) 1,024 per replica | vllm | – | – | – | – | – | – | 22,952.2 | 22,046.9 |
 | `vllm-torchtpu` + MXFP4 patch, `TP=2, DP=4`, 64 per replica | vllm | 124.5 | 4,173.6 | 5,313.7 | – | – | – | – | – |
 | same, 128 per replica | vllm | – | 3,337.2 | 5,806.9 | 7,849.5 | 11,426.5 | – | – | – |
 | same, 256 per replica | vllm | – | – | – | 7,451.6 | 11,394.8 | 14,867.1 | – | – |
@@ -72,9 +73,23 @@ These runs came after sections A and B, on one host (4 chips) with newer contain
 | same, decode batch 128 | sglang | – | – | 6,271.5 | 9,133.0 | 10,988.6 | – | – | – |
 | same, decode batch 256 | sglang | – | – | – | 9,354.2 | 11,619.3 | 13,499.9 | – | – |
 | `sglang-torchtpu`, 8 attention groups, decode batch 64 | sglang | – | – | 6,213.2 | 8,688.0 | 11,369.1 | – | – | – |
+| same, decode batch 128 | sglang | – | – | – | – | 12,400.4 | 13,869.7 | – | – |
+| same, decode batch 256 | sglang | – | – | – | – | – | 13,861.0 | 12,860.8 | – |
+| same, decode batch 128, 16,384-token prefill chunks | sglang | – | – | – | – | 13,479.4 | 15,748.3 | – | – |
 | `sglang-torchtpu`, 8 attention groups, decode batch 64, measured with `vllm bench serve` | vllm | – | – | 6,142.2 | 8,396.3 | 11,743.4 | – | – | – |
 
 "Per replica" is the running-request limit of each of the 4 data-parallel replicas of the vLLM stacks. When the load is above a setup's total limit, the extra requests wait in a queue and the time to first token grows (33.4 s for the JAX 128-per-replica run at 1,024 requests). More concurrent requests also make each request slower: the median time per output token was 10.5 ms for JAX at 64 requests, 41.9 ms for JAX at 1,024, and 160.1 ms for `vllm-torchtpu` at 4,096. The last row measures one sglang setup with `vllm bench serve`; its throughput agreed with sglang's own client within 3.4% (appendix section 4.5). The 64-request point of the 128-per-replica `vllm-torchtpu` run was its first point after startup and came out lower than the 64-per-replica run (appendix section 4.6). Latency for every point is in section 4.4 of [`APPENDIX.md`](./APPENDIX.md).
+
+Long prompts at higher load (8k in / 1k out), output tokens per second:
+
+| Stack and setup | Client | 64 | 128 | 256 | 512 | 1,024 |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| `vllm-tpu` (JAX) 128 per replica | vllm | 4,023.4 | 4,133.2 | 6,035.6 | **7,447.1** | – |
+| `vllm-torchtpu` + MXFP4 patch, `TP=2, DP=4`, 256 per replica | vllm | 3,117.3 | 3,829.3 | 5,061.6 | 5,971.3 | – |
+| same, 512 per replica | vllm | – | – | – | – | 6,881.7 |
+| `sglang-torchtpu`, 8 attention groups, decode batch 128 | sglang | 2,482.9 | 3,165.4 | 3,783.8 | 3,823.3 | – |
+
+JAX `vllm-tpu` was again highest at every load where it was measured. With 8k prompts, `sglang-torchtpu` took a median 5.9 to 15.0 s to return the first token, vs. 1.5 to 1.9 s for `vllm-torchtpu` up to 512 requests. Section B measured 2,696.6 tok/s at 64 requests with 8k prompts (96 prompts, older image); these runs sent 2 prompts per concurrent request, so the two numbers are not directly comparable.
 
 One request at a time, and long prompts (median values):
 
@@ -112,13 +127,14 @@ Section C runs inside a pod on one v7x host with the matching container image (`
 
 ```bash
 # sglang-torchtpu (setup names and exact flags are listed in the script)
-python3 scripts/benchmark_sglang_mxfp4_single_host.py --setups sglang_mxfp4_dp4_tp8_ep8_compiled_bs256,sglang_mxfp4_tp8_ep8_dflash16
+python3 scripts/benchmark_sglang_mxfp4_single_host.py --setups sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k,sglang_mxfp4_tp8_ep8_dflash16
 
 # vllm-torchtpu: applies scripts/patches/apply_vllm_torchtpu_gptoss_mxfp4_patch.py, then benchmarks
 python3 scripts/benchmark_vllm_torchtpu_mxfp4.py --setups vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024
 
 # vllm-tpu (JAX): section B settings with 512 running requests per replica
 MAX_NUM_SEQS=512 LOADS="512 1024 2048" bash scripts/run_vllm_tpu_jax_high_load.sh
+MAX_NUM_SEQS=128 INPUT_LEN=8192 LOADS="64 128 256 512" bash scripts/run_vllm_tpu_jax_high_load.sh
 ```
 
 ---

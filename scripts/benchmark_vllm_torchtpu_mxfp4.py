@@ -169,6 +169,46 @@ ARMS = [
             {"label": "1k_1k_c4096", "isl": 1024, "osl": 1024, "conc": 4096, "prompts": 8192, "warmups": 128},
         ],
     },
+    # The 512-per-replica setup with 16,384 batched tokens per step (the JAX vllm-tpu setting) instead of 8,192.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs512_bt16384",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 512,
+        "max_batched_tokens": 16384,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "1k_1k_c1024", "isl": 1024, "osl": 1024, "conc": 1024, "prompts": 2048, "warmups": 32},
+            {"label": "1k_1k_c2048", "isl": 1024, "osl": 1024, "conc": 2048, "prompts": 4096, "warmups": 64},
+        ],
+    },
+    # Long prompts at higher load: 8k in / 1k out with 256 running requests per replica (1,024 in total).
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_8k",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 256,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "8k_1k_c64", "isl": 8192, "osl": 1024, "conc": 64, "prompts": 128, "warmups": 8},
+            {"label": "8k_1k_c128", "isl": 8192, "osl": 1024, "conc": 128, "prompts": 256, "warmups": 8},
+            {"label": "8k_1k_c256", "isl": 8192, "osl": 1024, "conc": 256, "prompts": 512, "warmups": 16},
+            {"label": "8k_1k_c512", "isl": 8192, "osl": 1024, "conc": 512, "prompts": 1024, "warmups": 16},
+        ],
+    },
+    # 8k prompts were still rising at c=512 (5,971 tok/s): 512 running requests per replica, measured at c=1024.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs512_8k",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 512,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "8k_1k_c1024", "isl": 8192, "osl": 1024, "conc": 1024, "prompts": 2048, "warmups": 32},
+        ],
+    },
 ]
 
 
