@@ -942,6 +942,77 @@
       }
     }
   },
+  "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_8k": {
+    "arm": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_8k",
+    "startup_s": 1689.22,
+    "sanity_text": " 37*40=1480; 37*3=111; sum=1591. Yes.\n\nNow 1591*47: 1591*50=79550; subtract 1591*3=4773; 79550-4773=74777. Yes.\n\nNow 74777",
+    "points": {
+      "8k_1k_c64": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 64,
+        "completed": 128,
+        "request_throughput_req_s": 2.53,
+        "output_throughput_tok_s": 2590.71,
+        "total_token_throughput_tok_s": 23316.39,
+        "median_ttft_ms": 5558.44,
+        "p99_ttft_ms": 8588.78,
+        "median_tpot_ms": 19.41,
+        "p99_tpot_ms": 23.53,
+        "median_e2e_ms": 25261.3,
+        "accept_length": null,
+        "passes_22k_median_slo": null
+      },
+      "8k_1k_c128": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 128,
+        "completed": 256,
+        "request_throughput_req_s": 3.05,
+        "output_throughput_tok_s": 3123.49,
+        "total_token_throughput_tok_s": 28111.44,
+        "median_ttft_ms": 4574.07,
+        "p99_ttft_ms": 18165.89,
+        "median_tpot_ms": 33.79,
+        "p99_tpot_ms": 49.18,
+        "median_e2e_ms": 41194.78,
+        "accept_length": null,
+        "passes_22k_median_slo": null
+      },
+      "8k_1k_c256": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 256,
+        "completed": 512,
+        "request_throughput_req_s": 3.638,
+        "output_throughput_tok_s": 3725.78,
+        "total_token_throughput_tok_s": 33532.03,
+        "median_ttft_ms": 6539.02,
+        "p99_ttft_ms": 35565.74,
+        "median_tpot_ms": 57.86,
+        "p99_tpot_ms": 86.58,
+        "median_e2e_ms": 69822.2,
+        "accept_length": null,
+        "passes_22k_median_slo": null
+      },
+      "8k_1k_c512": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 512,
+        "completed": 1024,
+        "request_throughput_req_s": 3.845,
+        "output_throughput_tok_s": 3937.31,
+        "total_token_throughput_tok_s": 35435.78,
+        "median_ttft_ms": 10075.71,
+        "p99_ttft_ms": 70417.66,
+        "median_tpot_ms": 111.85,
+        "p99_tpot_ms": 181.24,
+        "median_e2e_ms": 129925.27,
+        "accept_length": null,
+        "passes_22k_median_slo": null
+      }
+    }
+  },
   "sglang_mxfp4_tp8_ep8_compiled_baseline": {
     "arm": "sglang_mxfp4_tp8_ep8_compiled_baseline",
     "startup_s": 1589.23,
@@ -2063,6 +2134,45 @@
         "median_tpot_ms": 57.59,
         "p99_tpot_ms": 63.86,
         "median_e2e_ms": 65850.69,
+        "accept_length": null,
+        "passes_22k_median_slo": null
+      }
+    }
+  },
+  "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk32k": {
+    "arm": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk32k",
+    "startup_s": 1765.33,
+    "sanity_text": " 37*40=1480; 37*3=111; sum=1591. Yes.\n\nNow 1591*47: 1591*50=79550; subtract 1591*3=4773; 79550-4773=74777. Yes.\n\nNow 74777",
+    "points": {
+      "1k_1k_c512": {
+        "isl": 1024,
+        "osl": 1024,
+        "concurrency": 512,
+        "completed": 1024,
+        "request_throughput_req_s": 13.09,
+        "output_throughput_tok_s": 13404.32,
+        "total_token_throughput_tok_s": 26808.64,
+        "median_ttft_ms": 3849.88,
+        "p99_ttft_ms": 8771.44,
+        "median_tpot_ms": 33.94,
+        "p99_tpot_ms": 37.08,
+        "median_e2e_ms": 38708.1,
+        "accept_length": null,
+        "passes_22k_median_slo": null
+      },
+      "1k_1k_c1024": {
+        "isl": 1024,
+        "osl": 1024,
+        "concurrency": 1024,
+        "completed": 2048,
+        "request_throughput_req_s": 15.742,
+        "output_throughput_tok_s": 16119.59,
+        "total_token_throughput_tok_s": 32239.19,
+        "median_ttft_ms": 7391.17,
+        "p99_ttft_ms": 15219.14,
+        "median_tpot_ms": 55.73,
+        "p99_tpot_ms": 62.71,
+        "median_e2e_ms": 64365.45,
         "accept_length": null,
         "passes_22k_median_slo": null
       }

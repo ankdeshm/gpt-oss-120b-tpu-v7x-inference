@@ -1449,5 +1449,90 @@
         "median_e2el_ms": 0.0
       }
     }
+  },
+  "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_8k_bt16384": {
+    "arm": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_8k_bt16384",
+    "model": "openai/gpt-oss-120b",
+    "license": "Apache-2.0",
+    "quantization": "native_mxfp4_kmajor_fp4_padded_2944",
+    "kv_cache_dtype": "fp8",
+    "tp": 2,
+    "dp": 4,
+    "devices": 8,
+    "startup_s": 392.24,
+    "sanity_outputs": {
+      "explain_tpu": "\n\nCloud TPU v7x uses two TensorCores per chip to increase the computational power and efficiency of the chip. This allows for faster and more efficient processing of large amounts of data, which is essential for training and deploying machine learning models.\n\nThe\n\nThe Cloud TPU v7x is a type of hardware accelerator",
+      "math_check": " 37 * 43 = 1591\n\nThe product of 37 and 43 is 1591.\n\nThe product of 37 and 43 is 1591.\n\nYes, that's correct!\n\nThe\n\nIt looks like your message got cut off. Could you let me know what you were going"
+    },
+    "points": {
+      "8k_1k_c256": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 256,
+        "completed": 512,
+        "failed": 0,
+        "request_throughput_req_s": 4.522,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 4630.84,
+        "total_token_throughput_tok_s": 41677.58,
+        "median_ttft_ms": 2803.13,
+        "p95_ttft_ms": 24358.64,
+        "median_tpot_ms": 49.79,
+        "p95_tpot_ms": 58.89,
+        "median_itl_ms": 31.41,
+        "median_e2el_ms": 0.0
+      },
+      "8k_1k_c512": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 512,
+        "completed": 1024,
+        "failed": 0,
+        "request_throughput_req_s": 5.823,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 5962.8,
+        "total_token_throughput_tok_s": 53665.16,
+        "median_ttft_ms": 2318.0,
+        "p95_ttft_ms": 38328.63,
+        "median_tpot_ms": 82.2,
+        "p95_tpot_ms": 84.39,
+        "median_itl_ms": 49.42,
+        "median_e2el_ms": 0.0
+      }
+    }
+  },
+  "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024_8k": {
+    "arm": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024_8k",
+    "model": "openai/gpt-oss-120b",
+    "license": "Apache-2.0",
+    "quantization": "native_mxfp4_kmajor_fp4_padded_2944",
+    "kv_cache_dtype": "fp8",
+    "tp": 2,
+    "dp": 4,
+    "devices": 8,
+    "startup_s": 128.19,
+    "sanity_outputs": {
+      "explain_tpu": "\n\nCloud TPU v7x uses two TensorCores per chip to increase the computational power and efficiency of the chip. This allows for faster and more efficient processing of large amounts of data, which is essential for training and deploying machine learning models.\n\nThe\n\nThe Cloud TPU v7x is a type of hardware accelerator",
+      "math_check": " 37 * 43 = 1591\n\nThe product of 37 and 43 is 1591.\n\nThe product of 37 and 43 is 1591.\n\nYes, that's correct!\n\nThe\n\nIt looks like your message got cut off. Could you let me know what you were going"
+    },
+    "points": {
+      "8k_1k_c2048": {
+        "isl": 8192,
+        "osl": 1024,
+        "concurrency": 2048,
+        "completed": 4096,
+        "failed": 0,
+        "request_throughput_req_s": 7.454,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 7632.55,
+        "total_token_throughput_tok_s": 68692.92,
+        "median_ttft_ms": 8255.9,
+        "p95_ttft_ms": 180693.21,
+        "median_tpot_ms": 236.81,
+        "p95_tpot_ms": 253.81,
+        "median_itl_ms": 129.44,
+        "median_e2el_ms": 0.0
+      }
+    }
   }
 }

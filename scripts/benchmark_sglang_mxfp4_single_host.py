@@ -115,6 +115,12 @@ SETUPS: list[dict[str, Any]] = [
     # Decode batch 128 setup with 8k-token prompts (8k in / 1k out) at 64 to 512 requests.
     {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_8k", "exp_spec": False, "points": HIGH_8K,
      "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024"]},
+    # Decode batch 128 setup with 32,768-token prefill chunks.
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk32k", "exp_spec": False, "points": C512 + C1024,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "32768"]},
+    # Decode batch 128 setup with 16,384-token prefill chunks and 8k-token prompts.
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_8k", "exp_spec": False, "points": HIGH_8K,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
     # Starting setup with 32k-token prefill chunks, so a 22k prompt is prefilled in one chunk.
     {"name": "sglang_mxfp4_tp8_ep8_compiled_chunk32k", "exp_spec": False, "points": LONG,
      "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "8", "--chunked-prefill-size", "32768"]},
