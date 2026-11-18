@@ -1,0 +1,6 @@
+vllm 0.33.0rc1.dev430+g7b77ed581
+jax                                      0.11.2
+jaxlib                                   0.11.2
+libtpu                                   0.0.48
+vllm                                     0.33.0rc1.dev430+g7b77ed581.tpu /workspace/vllm
+startup_s 1371

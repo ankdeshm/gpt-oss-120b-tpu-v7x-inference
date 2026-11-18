@@ -1,6 +1,6 @@
 # Appendix: Stack Compatibility Deep Dive, Load-Time Patches, Ablations, and Raw Telemetry (GPT-OSS 120B on TPU v7x)
 
-This appendix preserves the complete architectural analysis across `sglang-torchtpu`, `vllm-torchtpu`, and `vllm-tpu` (JAX), load-time patch root causes (including the unpatched `vllm-torchtpu` correctness failure), `EAGLE3` speculative decoding ablations, multi-host scaling breakdowns, `22k/4k` latency-target verdicts, and all 13 complete per-suite benchmark tables. For headline numbers and reproduction commands, see [`README.md`](./README.md).
+This appendix preserves the complete architectural analysis across `sglang-torchtpu`, `vllm-torchtpu`, and `vllm-tpu` (JAX), load-time patch root causes (including the unpatched `vllm-torchtpu` correctness failure), `EAGLE3` speculative decoding ablations, multi-host scaling breakdowns, `22k/4k` latency-target verdicts, and all 13 complete per-suite benchmark tables. Section 4 covers the follow-up single-host MXFP4 runs at higher load (README section C). For headline numbers and reproduction commands, see [`README.md`](./README.md).
 
 ---
 
@@ -393,3 +393,442 @@ This appendix preserves the complete architectural analysis across `sglang-torch
 | `ref_8k1k` | `8,192 : 1,024` | `CON=1` | 20 | 0.187 | 0.187 | 191.8 | 47.9 | 1,726.0 | 246.0 / 246.9 / 247.2 | 5.00 / 5.46 / 5.59 | 6.79 / 7.28 | 5.36 / 5.83 | Pass (All) |
 | `ref_8k1k` | `8,192 : 1,024` | `CON=8` | 48 | 0.586 | 0.012 | 600.3 | 150.1 | 5,402.8 | 255.8 / 1,272.7 / 1,678.1 | 12.21 / 14.83 / 15.24 | 15.60 / 16.24 | 12.91 / 15.65 | Partial (E2E) |
 | `ref_8k1k` | `8,192 : 1,024` | `CON=32` | 64 | 1.318 | 0.000 | 1,349.1 | 337.3 | 12,142.2 | 578.8 / 6,431.3 / 6,990.7 | 20.12 / 26.88 / 28.13 | 21.32 / 22.41 | 22.04 / 30.33 | Partial (E2E) |
+
+---
+
+## 4. Follow-Up: One Host at Higher Load (MXFP4 + FP8 KV)
+
+These runs came after sections 1 to 3. They use the native MXFP4 checkpoint (`openai/gpt-oss-120b`) with FP8 KV cache on one v7x host (4 chips, 8 TensorCores) and push to higher load than before. Raw results are in [`results/gptoss120b_1h_4c_mxfp4_followup/`](./results/gptoss120b_1h_4c_mxfp4_followup/).
+
+### 4.1 What is new compared with sections 1 to 3
+
+- **`vllm-torchtpu` now serves MXFP4.** [`scripts/patches/apply_vllm_torchtpu_gptoss_mxfp4_patch.py`](./scripts/patches/apply_vllm_torchtpu_gptoss_mxfp4_patch.py) registers the `gpt_oss_mxfp4` method for TPU, packs the experts into native 4-bit K-major FP4, pads `hidden_size` 2880 to 2944 (the same alignment issue as in section 1.B), fixes the 64-wide attention head KV layout, and lets the DFlash draft model share the target model's embeddings. Every sanity prompt returned the correct answer (37 × 43 = 1591) and readable text.
+- **`sglang-torchtpu` with data-parallel attention.** `--enable-dp-attention --dp-size 4` (or 8) splits attention into 4 groups of 2 TensorCores (or 8 single cores) while the experts stay split over all 8 cores (`EP=8`). With `TP=8`, sglang requires `--enable-dp-lm-head` for this.
+- **Larger batches and request limits.** In sglang, `--cuda-graph-max-bs-decode` sets the largest decode batch with a compiled graph and `--max-running-requests` caps requests in flight. In the vLLM stacks, `--max-num-seqs` caps running requests per data-parallel replica. We raised these limits and measured up to 4,096 concurrent requests.
+- **DFlash speculative decoding** with [`z-lab/gpt-oss-120b-DFlash`](https://huggingface.co/z-lab/gpt-oss-120b-DFlash), a small draft model that proposes 8 or 16 tokens at a time.
+- **Newer container images** than sections 1 to 3. To check that the change of image does not explain the differences, we re-ran the section B JAX `vllm-tpu` setup (`TP=2, DP=4`, 64 running requests per replica) with the same client: 5,788.5 tok/s at 64 requests vs. 5,847.0 in section B (1% apart).
+
+### 4.2 Clients
+
+- `vllm-tpu` (JAX) and `vllm-torchtpu` were measured with `vllm bench serve`, like sections 1 to 3.
+- `sglang-torchtpu` was measured with `sglang.bench_serving` (`--backend sglang-oai --random-range-ratio 1.0`).
+- Both clients send random-token prompts of exactly the stated length, ignore end-of-sequence tokens so every request produces the full output length, and keep a fixed number of requests in flight. To check that the client does not change the comparison, we also measured one sglang setup with `vllm bench serve` (section 4.5).
+- Each point is one run. We did not repeat runs. Two runs of the same `vllm-torchtpu` layout at 128 requests, where neither run's request limit was reached, gave 5,313.7 and 5,806.9 tok/s, so differences under about 10% between separate runs should not be read as real.
+
+### 4.3 Setups
+
+`sglang-torchtpu` (all with `TP=8`, `EP=8`, FP8 KV cache, 26,624-token context limit, radix cache off; exact command lines in [`scripts/benchmark_sglang_mxfp4_single_host.py`](./scripts/benchmark_sglang_mxfp4_single_host.py)):
+
+| Setup | Attention groups | `torch.compile` | Decode graphs up to batch | Running-request limit | DFlash draft tokens | Other | Result |
+| :--- | ---: | :--- | ---: | ---: | ---: | :--- | :--- |
+| `sglang_mxfp4_tp8_ep8_baseline` | 1 | no | – | default | – | memory fraction 0.84 | measured |
+| `sglang_mxfp4_tp8_ep8_compiled_baseline` | 1 | yes | 8 | default | – | – | measured |
+| `sglang_mxfp4_tp8_ep8_dflash8` | 1 | yes | 8 | default | 8 | – | measured |
+| `sglang_mxfp4_tp8_ep8_dflash16` | 1 | yes | 8 | default | 16 | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_dflash8_exp` | 4 | yes | 8 | default | 8 | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_dflash16_exp` | 4 | yes | 8 | default | 16 | – | measured |
+| `sglang_mxfp4_dp8_tp8_ep8_dflash8_exp` | 8 | yes | 8 | default | 8 | – | measured |
+| `sglang_mxfp4_dp8_tp8_ep8_dflash16_exp` | 8 | yes | 8 | default | 16 | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_dflash8_bs16` | 4 | yes | 16 | default | 8 | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_compiled_bs32` | 4 | yes | 32 | default | – | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_compiled_bs64` | 4 | yes | 64 | 256 | – | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_compiled_bs128` | 4 | yes | 128 | 512 | – | – | measured |
+| `sglang_mxfp4_dp4_tp8_ep8_compiled_bs256` | 4 | yes | 256 | 1,024 | – | – | measured |
+| `sglang_mxfp4_dp8_tp8_ep8_compiled_bs32` | 8 | yes | 32 | 256 | – | – | measured |
+| `sglang_mxfp4_dp8_tp8_ep8_compiled_bs64` | 8 | yes | 64 | 512 | – | – | measured |
+| `sglang_mxfp4_tp8_ep8_compiled_chunk32k` | 1 | yes | 8 | default | – | prefill chunk 32,768 | measured |
+| `sglang_mxfp4_tp8_ep8_dflash16_chunk32k` | 1 | yes | 8 | default | 16 | prefill chunk 32,768 | not completed (pod evicted) |
+
+`vllm-torchtpu` with the MXFP4 patch (all with FP8 KV cache, 26,624-token context limit, prefix cache off; exact flags in [`scripts/benchmark_vllm_torchtpu_mxfp4.py`](./scripts/benchmark_vllm_torchtpu_mxfp4.py)):
+
+| Setup | Layout | Running requests per replica | Batched tokens per step | Memory fraction | Other flags | Result |
+| :--- | :--- | ---: | ---: | ---: | :--- | :--- |
+| `vllm_torchtpu_mxfp4_tp8_dp1` | `TP=8, DP=1` | 128 | 16,384 | 0.88 | expert parallel | measured |
+| `vllm_torchtpu_mxfp4_tp4_dp2_async` | `TP=4, DP=2` | 64 | 16,384 | 0.88 | expert parallel, async scheduling | measured |
+| `vllm_torchtpu_mxfp4_tp2_dp4_async` | `TP=2, DP=4` | 64 | 8,192 | 0.88 | async scheduling | measured |
+| `vllm_torchtpu_mxfp4_tp8_dflash8` | `TP=8, DP=1` | 32 | 8,192 | 0.80 | expert parallel, DFlash, 8 draft tokens | measured |
+| `vllm_torchtpu_mxfp4_tp8_dflash16` | `TP=8, DP=1` | 32 | 8,192 | 0.80 | expert parallel, DFlash, 16 draft tokens | measured |
+| `vllm_torchtpu_mxfp4_tp2_dp4_dflash8` | `TP=2, DP=4` | 32 | 8,192 | 0.80 | async scheduling, DFlash, 8 draft tokens | failed to start |
+| `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs128` | `TP=2, DP=4` | 128 | 8,192 | 0.88 | async scheduling | measured |
+| `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256` | `TP=2, DP=4` | 256 | 8,192 | 0.88 | async scheduling | measured |
+| `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs512` | `TP=2, DP=4` | 512 | 8,192 | 0.88 | async scheduling | measured |
+| `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024` | `TP=2, DP=4` | 1,024 | 8,192 | 0.88 | async scheduling | measured |
+
+`vllm-tpu` (JAX): the single-host MXFP4 settings from section B ([`k8s/gpt-oss-120b-vllm-tpu-v7x.yaml`](./k8s/gpt-oss-120b-vllm-tpu-v7x.yaml)): `TP=2, DP=4`, 16,384 batched tokens per step, memory fraction 0.86, FP8 KV cache, async scheduling, chunked prefill, prefix cache off. Only the running-request limit per replica changed between runs (64 and 128 and 512). Script: [`scripts/run_vllm_tpu_jax_high_load.sh`](./scripts/run_vllm_tpu_jax_high_load.sh).
+
+### 4.4 Full results
+
+TTFT is time to first token and TPOT is time per output token (both medians). "Accepted tokens per step" is the average number of tokens each decode step produced with DFlash. "failed" means that point did not complete. When the number of concurrent requests is above the setup's running-request limit, the extra requests wait in a queue, which shows up as a long time to first token.
+
+#### `sglang-torchtpu` (measured with `sglang.bench_serving`)
+
+##### `sglang_mxfp4_tp8_ep8_baseline`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 8.4 | 16.9 | 285 | 118.16 |
+| 1k / 1k, 8 | 62.3 | 124.6 | 5,197 | 123.50 |
+| 1k / 1k, 32 | 225.7 | 451.5 | 12,856 | 129.35 |
+| 1k / 1k, 64 | 244.0 | 488.0 | 128,137 | 126.87 |
+| 8k / 1k, 1 request | 8.4 | 75.5 | 421 | 117.30 |
+| 8k / 1k, 32 | 115.3 | 1,037.4 | 34,575 | 230.59 |
+| 22k / 4k, 1 request | 8.1 | 52.8 | 979 | 122.23 |
+| 22k / 4k, 8 | 59.1 | 384.3 | 19,463 | 130.73 |
+
+##### `sglang_mxfp4_dp8_tp8_ep8_dflash8_exp`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 229.3 | 458.6 | 158 | 4.45 | 2.63 |
+| 1k / 1k, 8 | 1,147.5 | 2,295.0 | 168 | 5.81 | 2.80 |
+| 1k / 1k, 32 | 2,712.4 | 5,424.7 | 182 | 9.61 | 2.77 |
+| 1k / 1k, 64 | 3,794.3 | 7,588.6 | 287 | 14.08 | 2.82 |
+| 8k / 1k, 1 request | 130.7 | 1,176.2 | 1,163 | 5.55 | 3.12 |
+| 8k / 1k, 32 | 983.8 | 8,854.1 | 1,246 | 28.61 | 2.47 |
+| 22k / 4k, 1 request | 131.4 | 854.4 | 3,421 | 7.20 | 2.31 |
+| 22k / 4k, 8 | 525.3 | 3,414.5 | 3,478 | 12.17 | 2.45 |
+
+##### `sglang_mxfp4_dp8_tp8_ep8_dflash16_exp`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 189.5 | 379.0 | 160 | 5.19 | 2.48 |
+| 1k / 1k, 8 | 864.8 | 1,729.5 | 170 | 7.69 | 2.47 |
+| 1k / 1k, 32 | 1,916.7 | 3,833.3 | 199 | 13.70 | 2.84 |
+| 1k / 1k, 64 | 2,815.5 | 5,631.0 | 276 | 19.45 | 2.53 |
+| 8k / 1k, 1 request | 113.0 | 1,016.9 | 1,164 | 7.07 | 2.68 |
+| 8k / 1k, 32 | 862.9 | 7,766.3 | 1,345 | 30.58 | 2.50 |
+| 22k / 4k, 1 request | 117.9 | 766.4 | 3,424 | 7.28 | 2.41 |
+| 22k / 4k, 8 | 434.1 | 2,821.7 | 3,501 | 13.90 | 2.19 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_compiled_bs32`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 143.9 | 287.8 | 101 | 6.80 |
+| 1k / 1k, 8 | 1,044.8 | 2,089.6 | 213 | 7.46 |
+| 1k / 1k, 32 | 2,667.0 | 5,334.0 | 438 | 11.57 |
+| 1k / 1k, 64 | 3,685.3 | 7,370.6 | 882 | 15.87 |
+| 8k / 1k, 1 request | 132.9 | 1,196.0 | 696 | 6.83 |
+| 8k / 1k, 32 | 1,573.5 | 14,161.4 | 3,523 | 16.78 |
+| 22k / 4k, 1 request | 133.2 | 865.6 | 2,010 | 6.93 |
+| 22k / 4k, 8 | 896.1 | 5,824.5 | 4,135 | 7.98 |
+| 1k / 1k, 128 | 6,103.0 | 12,206.1 | 1,634 | 19.06 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_compiled_bs64`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 143.4 | 286.8 | 101 | 6.83 |
+| 1k / 1k, 8 | 1,037.3 | 2,074.5 | 203 | 7.47 |
+| 1k / 1k, 32 | 2,657.7 | 5,315.5 | 460 | 11.60 |
+| 1k / 1k, 64 | 4,177.8 | 8,355.6 | 777 | 14.55 |
+| 8k / 1k, 1 request | 130.5 | 1,174.3 | 695 | 6.98 |
+| 8k / 1k, 32 | 1,804.9 | 16,244.3 | 3,821 | 14.00 |
+| 22k / 4k, 1 request | 135.7 | 882.0 | 2,007 | 6.88 |
+| 22k / 4k, 8 | 896.6 | 5,827.7 | 4,141 | 7.95 |
+| 1k / 1k, 128 | 6,073.0 | 12,145.9 | 1,315 | 19.53 |
+| 1k / 1k, 256 | 8,114.1 | 16,228.3 | 3,174 | 28.00 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_compiled_bs128`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 128 | 6,271.5 | 12,542.9 | 1,031 | 19.27 |
+| 1k / 1k, 256 | 9,133.0 | 18,266.0 | 2,447 | 25.52 |
+| 1k / 1k, 512 | 10,988.6 | 21,977.2 | 5,669 | 40.41 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_compiled_bs256`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 256 | 9,354.2 | 18,708.3 | 2,381 | 24.79 |
+| 1k / 1k, 512 | 11,619.3 | 23,238.5 | 4,172 | 39.04 |
+| 1k / 1k, 1,024 | 13,499.9 | 26,999.7 | 10,492 | 65.16 |
+
+##### `sglang_mxfp4_tp8_ep8_compiled_baseline`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 190.0 | 379.9 | 46 | 5.23 |
+| 1k / 1k, 8 | 1,127.0 | 2,253.9 | 138 | 6.95 |
+| 1k / 1k, 32 | 2,570.4 | 5,140.8 | 406 | 12.06 |
+| 1k / 1k, 64 | 2,586.8 | 5,173.5 | 12,969 | 11.99 |
+| 8k / 1k, 1 request | 180.6 | 1,625.7 | 187 | 5.37 |
+| 8k / 1k, 32 | 1,741.7 | 15,675.0 | 1,500 | 16.70 |
+| 22k / 4k, 1 request | 188.8 | 1,227.3 | 542 | 5.18 |
+| 22k / 4k, 8 | 936.0 | 6,083.7 | 2,704 | 7.87 |
+
+##### `sglang_mxfp4_tp8_ep8_dflash8`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 260.8 | 521.5 | 47 | 3.47 | 2.25 |
+| 1k / 1k, 8 | 1,444.6 | 2,889.2 | 56 | 4.88 | 2.51 |
+| 1k / 1k, 32 | 2,966.3 | 5,932.7 | 323 | 7.61 | 2.61 |
+| 1k / 1k, 64 | 3,331.4 | 6,662.8 | 9,181 | 8.28 | 2.61 |
+| 8k / 1k, 1 request | 228.6 | 2,057.3 | 191 | 3.96 | 2.59 |
+| 8k / 1k, 32 | 1,591.3 | 14,321.5 | 1,751 | 13.05 | 2.47 |
+| 22k / 4k, 1 request | 222.0 | 1,443.1 | 552 | 4.68 | 2.44 |
+| 22k / 4k, 8 | 863.0 | 5,609.7 | 585 | 7.55 | 2.33 |
+
+##### `sglang_mxfp4_tp8_ep8_dflash16`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 272.9 | 545.7 | 48 | 3.22 | 2.37 |
+| 1k / 1k, 8 | 1,181.5 | 2,363.1 | 60 | 5.77 | 2.42 |
+| 1k / 1k, 32 | 2,588.2 | 5,176.3 | 412 | 9.98 | 2.53 |
+| 1k / 1k, 64 | 2,690.9 | 5,381.8 | 11,263 | 10.25 | 2.52 |
+| 8k / 1k, 1 request | 217.4 | 1,956.8 | 191 | 4.32 | 2.50 |
+| 8k / 1k, 32 | 1,331.1 | 11,979.6 | 1,954 | 17.22 | 2.37 |
+| 22k / 4k, 1 request | 224.6 | 1,459.7 | 549 | 4.21 | 2.34 |
+| 22k / 4k, 8 | 715.8 | 4,652.6 | 591 | 9.31 | 2.23 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_dflash8_exp`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 205.5 | 410.9 | 103 | 4.94 | 2.32 |
+| 1k / 1k, 8 | 1,258.2 | 2,516.3 | 112 | 5.72 | 2.30 |
+| 1k / 1k, 32 | 2,827.2 | 5,654.4 | 143 | 9.28 | 2.54 |
+| 1k / 1k, 64 | 4,004.3 | 8,008.6 | 220 | 13.10 | 2.56 |
+| 8k / 1k, 1 request | 144.6 | 1,301.1 | 699 | 5.37 | 2.56 |
+| 8k / 1k, 32 | 1,189.7 | 10,707.1 | 815 | 21.44 | 2.66 |
+| 22k / 4k, 1 request | 114.5 | 744.5 | 2,018 | 7.98 | 2.63 |
+| 22k / 4k, 8 | 636.0 | 4,134.2 | 2,045 | 10.03 | 2.44 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_dflash16_exp`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 186.7 | 373.4 | 105 | 4.69 | 1.74 |
+| 1k / 1k, 8 | 927.4 | 1,854.8 | 114 | 7.39 | 1.88 |
+| 1k / 1k, 32 | 2,090.7 | 4,181.5 | 149 | 13.26 | 2.52 |
+| 1k / 1k, 64 | 2,673.4 | 5,346.8 | 209 | 20.57 | 2.46 |
+| 8k / 1k, 1 request | 122.3 | 1,101.1 | 702 | 7.07 | 2.54 |
+| 8k / 1k, 32 | 996.5 | 8,968.3 | 854 | 25.01 | 2.40 |
+| 22k / 4k, 1 request | 102.6 | 666.8 | 2,017 | 9.45 | 2.31 |
+| 22k / 4k, 8 | 567.9 | 3,691.5 | 2,059 | 12.17 | 2.04 |
+
+##### `sglang_mxfp4_dp4_tp8_ep8_dflash8_bs16`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) | Accepted tokens per step |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 205.4 | 410.8 | 103 | 4.90 | 2.78 |
+| 1k / 1k, 8 | 1,125.1 | 2,250.1 | 109 | 5.51 | 2.92 |
+| 1k / 1k, 32 | 2,839.7 | 5,679.3 | 136 | 8.93 | 2.73 |
+| 1k / 1k, 64 | 3,922.7 | 7,845.4 | 213 | 13.38 | 2.57 |
+| 8k / 1k, 1 request | 144.4 | 1,299.2 | 698 | 5.45 | 2.80 |
+| 8k / 1k, 32 | 1,190.4 | 10,713.7 | 860 | 21.44 | 2.62 |
+| 22k / 4k, 1 request | 116.2 | 755.4 | 2,020 | 7.82 | 2.41 |
+| 22k / 4k, 8 | 611.9 | 3,977.3 | 2,043 | 10.32 | 2.28 |
+| 1k / 1k, 128 | 5,132.3 | 10,264.6 | 1,559 | 16.92 | 2.48 |
+
+##### `sglang_mxfp4_dp8_tp8_ep8_compiled_bs32`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 149.4 | 298.7 | 153 | 6.54 |
+| 1k / 1k, 8 | 1,051.1 | 2,102.2 | 248 | 7.36 |
+| 1k / 1k, 32 | 2,591.6 | 5,183.2 | 411 | 11.93 |
+| 1k / 1k, 64 | 4,139.8 | 8,279.7 | 685 | 14.77 |
+| 8k / 1k, 1 request | 129.1 | 1,161.4 | 1,150 | 6.61 |
+| 8k / 1k, 32 | 1,832.3 | 16,490.7 | 3,425 | 14.25 |
+| 22k / 4k, 1 request | 130.3 | 846.7 | 3,412 | 6.82 |
+| 22k / 4k, 8 | 909.8 | 5,913.6 | 3,653 | 7.90 |
+| 1k / 1k, 128 | 5,685.2 | 11,370.4 | 1,000 | 20.65 |
+| 1k / 1k, 256 | 8,296.2 | 16,592.4 | 2,577 | 27.71 |
+
+##### `sglang_mxfp4_dp8_tp8_ep8_compiled_bs64`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 128 | 6,213.2 | 12,426.3 | 867 | 19.15 |
+| 1k / 1k, 256 | 8,688.0 | 17,376.0 | 1,494 | 27.13 |
+| 1k / 1k, 512 | 11,369.1 | 22,738.1 | 5,557 | 39.25 |
+
+##### `sglang_mxfp4_tp8_ep8_compiled_chunk32k`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 8k / 1k, 1 request | 183.1 | 1,648.0 | 182 | 5.27 |
+| 22k / 4k, 1 request | 185.4 | 1,205.3 | 654 | 5.22 |
+| 22k / 4k, 8 | 909.9 | 5,914.6 | 2,817 | 8.08 |
+
+#### `vllm-torchtpu` with the MXFP4 patch (measured with `vllm bench serve`)
+
+##### `vllm_torchtpu_mxfp4_tp8_dp1`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 226.2 | 452.4 | 35 | 4.39 |
+| 1k / 1k, 8 | 1,287.3 | 2,574.7 | 163 | 6.06 |
+| 1k / 1k, 32 | 2,549.8 | 5,099.6 | 617 | 10.15 |
+| 1k / 1k, 64 | 3,511.8 | 7,023.5 | 645 | 16.36 |
+| 1k / 1k, 128 | 4,481.1 | 8,962.3 | 1,008 | 26.24 |
+| 8k / 1k, 1 request | 213.7 | 1,923.5 | 191 | 4.50 |
+| 8k / 1k, 32 | 1,730.3 | 15,572.9 | 1,213 | 17.55 |
+| 8k / 1k, 64 | 1,964.2 | 17,678.2 | 1,258 | 31.42 |
+| 22k / 4k, 1 request | 202.7 | 1,317.6 | 707 | 4.76 |
+| 22k / 4k, 8 | 787.1 | 5,116.2 | 3,116 | 9.38 |
+| 22k / 4k, 32 | 1,124.4 | 7,308.7 | 5,418 | 25.51 |
+
+##### `vllm_torchtpu_mxfp4_tp4_dp2_async`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 153.9 | 307.8 | 55 | 6.44 |
+| 1k / 1k, 8 | 1,050.1 | 2,100.3 | 300 | 7.27 |
+| 1k / 1k, 32 | 2,180.3 | 4,360.7 | 1,133 | 12.58 |
+| 1k / 1k, 64 | 3,667.4 | 7,334.8 | 1,237 | 15.53 |
+| 1k / 1k, 128 | 5,089.8 | 10,179.6 | 1,625 | 22.78 |
+| 8k / 1k, 1 request | 147.4 | 1,326.6 | 352 | 6.44 |
+| 8k / 1k, 32 | 1,624.2 | 14,618.2 | 2,461 | 17.51 |
+| 8k / 1k, 64 | 1,975.7 | 17,781.3 | 2,505 | 30.11 |
+| 22k / 4k, 1 request | 140.6 | 914.0 | 1,315 | 6.77 |
+| 22k / 4k, 8 | 687.9 | 4,471.2 | 4,359 | 10.54 |
+| 22k / 4k, 32 | 1,059.8 | 6,888.7 | 7,803 | 25.05 |
+
+##### `vllm_torchtpu_mxfp4_tp2_dp4_async`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 124.5 | 249.0 | 60 | 7.50 |
+| 1k / 1k, 8 | 1,004.8 | 2,009.6 | 151 | 7.81 |
+| 1k / 1k, 32 | 2,813.6 | 5,627.1 | 240 | 10.12 |
+| 1k / 1k, 64 | 4,173.6 | 8,347.3 | 460 | 13.71 |
+| 1k / 1k, 128 | 5,313.7 | 10,627.3 | 608 | 23.20 |
+| 8k / 1k, 1 request | 127.9 | 1,150.9 | 322 | 7.54 |
+| 8k / 1k, 32 | 2,116.6 | 19,049.4 | 1,626 | 13.23 |
+| 8k / 1k, 64 | 2,797.7 | 25,178.9 | 2,345 | 20.64 |
+| 22k / 4k, 1 request | 127.6 | 829.1 | 1,299 | 7.52 |
+| 22k / 4k, 8 | 796.9 | 5,180.1 | 2,485 | 9.46 |
+| 22k / 4k, 32 | 1,481.4 | 9,629.1 | 4,888 | 17.52 |
+
+##### `vllm_torchtpu_mxfp4_tp8_dflash8`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 233.6 | 467.1 | 35 | 4.12 |
+| 1k / 1k, 8 | 751.4 | 1,502.7 | 66 | 10.31 |
+| 1k / 1k, 32 | 1,234.1 | 2,468.2 | 125 | 24.09 |
+| 1k / 1k, 64 | 1,231.3 | 2,462.6 | 25,885 | 24.87 |
+| 1k / 1k, 128 | 1,295.4 | 2,590.8 | 73,171 | 24.28 |
+| 8k / 1k, 1 request | 186.1 | 1,674.7 | 186 | 5.09 |
+| 8k / 1k, 32 | 696.3 | 6,266.5 | 607 | 42.13 |
+| 8k / 1k, 64 | 727.9 | 6,551.2 | 43,484 | 41.15 |
+| 22k / 4k, 1 request | 176.7 | 1,148.8 | 832 | 5.41 |
+| 22k / 4k, 8 | 359.0 | 2,333.7 | 910 | 19.77 |
+| 22k / 4k, 32 | 431.7 | 2,805.8 | 7,045 | 64.33 |
+
+##### `vllm_torchtpu_mxfp4_tp8_dflash16`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1 request | 214.3 | 428.6 | 35 | 4.87 |
+| 1k / 1k, 8 | 606.6 | 1,213.1 | 73 | 12.09 |
+| 1k / 1k, 32 | 976.4 | 1,952.7 | 165 | 31.17 |
+| 1k / 1k, 64 | 1,009.6 | 2,019.2 | 31,741 | 29.92 |
+| 1k / 1k, 128 | 991.9 | 1,983.8 | 94,694 | 31.73 |
+| 8k / 1k, 1 request | 179.4 | 1,614.5 | 187 | 5.39 |
+| 8k / 1k, 32 | 614.4 | 5,529.7 | 565 | 47.36 |
+| 8k / 1k, 64 | 615.2 | 5,537.2 | 53,151 | 49.44 |
+| 22k / 4k, 1 request | 159.6 | 1,037.5 | 830 | 5.98 |
+| 22k / 4k, 8 | 313.4 | 2,037.1 | 920 | 24.50 |
+| 22k / 4k, 32 | 394.8 | 2,566.4 | 7,056 | 73.30 |
+
+##### `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs128`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 64 | 3,337.2 | 6,674.4 | 3,178 | 16.68 |
+| 1k / 1k, 128 | 5,806.9 | 11,613.8 | 575 | 20.11 |
+| 1k / 1k, 256 | 7,849.5 | 15,699.0 | 716 | 31.00 |
+| 1k / 1k, 512 | 11,426.5 | 22,853.0 | 901 | 42.74 |
+
+##### `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 256 | 7,451.6 | 14,903.2 | 861 | 30.71 |
+| 1k / 1k, 512 | 11,394.8 | 22,789.7 | 1,114 | 42.76 |
+| 1k / 1k, 1,024 | 14,867.1 | 29,734.3 | 1,188 | 62.70 |
+
+##### `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs512`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1,024 | 13,774.0 | 27,548.1 | 1,011 | 67.65 |
+| 1k / 1k, 2,048 | 20,284.0 | 40,568.0 | 1,310 | 97.48 |
+
+##### `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 2,048 | 19,672.4 | 39,344.8 | 1,304 | 94.84 |
+| 1k / 1k, 4,096 | 24,357.1 | 48,714.2 | 3,512 | 160.09 |
+
+#### `vllm-tpu` (JAX), `TP=2, DP=4` (measured with `vllm bench serve`)
+
+##### 64 running requests per replica (section B settings), newer image
+
+| Concurrent requests (1k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 128 | 5,788.5 | 11,577.0 | 515 | 10.49 |
+| 128 | 256 | 7,589.8 | 15,179.6 | 857 | 15.80 |
+| 256 | 512 | 9,434.6 | 18,869.2 | 1,304 | 22.04 |
+| 512 | 1,024 | 10,134.9 | 20,269.9 | 24,874 | 22.93 |
+
+##### 128 running requests per replica
+
+| Concurrent requests (1k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 256 | 512 | 11,283.7 | 22,567.4 | 1,434 | 21.01 |
+| 512 | 1,024 | 15,876.6 | 31,753.2 | 2,367 | 29.80 |
+| 1,024 | 2,048 | 15,784.4 | 31,568.7 | 33,394 | 31.31 |
+
+##### 512 running requests per replica
+
+| Concurrent requests (1k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 1,024 | 17,190.0 | 34,379.9 | 2,687 | 27.02 |
+| 1,024 | 2,048 | 22,163.6 | 44,327.1 | 4,223 | 41.88 |
+| 2,048 | 4,096 | 21,387.7 | 42,775.4 | 7,829 | 87.60 |
+
+### 4.5 Same-client check
+
+`sglang-torchtpu` was measured with its own client and the two vLLM stacks with `vllm bench serve`. To see whether the client changes the numbers, we started the 8-attention-group, decode-batch-64 sglang setup again with the same flags on the same host and measured it with `vllm bench serve`, using exactly the client settings of the vLLM runs. Raw results are in [`results/gptoss120b_1h_4c_mxfp4_followup/sglang_measured_with_vllm_bench/`](./results/gptoss120b_1h_4c_mxfp4_followup/sglang_measured_with_vllm_bench/).
+
+| Concurrent requests (1k in / 1k out) | `sglang.bench_serving`: output tok/s | `vllm bench serve`: output tok/s | Difference | Median TTFT (ms), sglang / vllm client | Median TPOT (ms), sglang / vllm client |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 6,213.2 | 6,142.2 | −1.1% | 867 / 1,262 | 19.15 / 19.66 |
+| 256 | 8,688.0 | 8,396.3 | −3.4% | 1,494 / 2,265 | 27.13 / 27.47 |
+| 512 | 11,369.1 | 11,743.4 | +3.3% | 5,557 / 4,274 | 39.25 / 38.80 |
+
+Output throughput agreed within 3.4% and time per output token within 2.7%, which is inside the run-to-run variation in section 4.2 (the two measurements are separate server launches). Time to first token did not agree: it differed by 23% to 52%, in both directions. So throughput and time per output token can be compared across the two clients, but time to first token under load should only be compared within one client.
+
+### 4.6 What worked and what did not
+
+- **JAX `vllm-tpu` gave the highest throughput from 64 to 1,024 concurrent requests,** without code patches. With 512 requests per replica it gave 17,190.0 tok/s at 512 requests and 22,163.6 at 1,024 (median 41.9 ms per output token), vs. 11,426.5 and 14,867.1 for the best `vllm-torchtpu` setups and 11,619.3 and 13,499.9 for the best `sglang-torchtpu` setups at those loads. At 2,048 requests it dropped to 21,387.7 tok/s, while `vllm-torchtpu` kept rising (20,284.0 at 2,048 and 24,357.1 at 4,096). At 1,024 requests JAX took longer to return the first token than `vllm-torchtpu` (median 4.2 s vs. 1.19 s, same client).
+- **`torch.compile` is essential for `sglang-torchtpu`.** Without it (`sglang_mxfp4_tp8_ep8_baseline`) a single request ran at 8.4 tok/s (118 ms per output token), vs. 190.0 tok/s (5.23 ms) with `--enable-torch-compile`.
+- **Data-parallel attention raises throughput under load and costs single-request speed.** At 64 requests, 4 attention groups with decode batch 64 gave 4,177.8 tok/s vs. 2,586.8 for plain `TP=8` (which only compiles decode graphs up to batch 8). With one request, time per output token went from 5.23 ms to 6.83 ms.
+- **DFlash helps one request at a time and hurts under load.** With `TP=8`, DFlash-16 raised single-request throughput from 190.0 to 272.9 tok/s (3.22 ms per token). Under load the extra verification work costs more than it saves: with 4 attention groups at 128 requests, DFlash-8 (decode batch 16) gave 5,132.3 tok/s vs. 6,103.0 without DFlash (decode batch 32). On random prompts the draft model accepted between 1.7 and 3.1 tokens per step, mostly 2.3 to 2.8.
+- **DFlash-8 beat DFlash-16 under load** (4,004.3 vs. 2,673.4 tok/s at 64 requests with 4 attention groups). Each DFlash-16 step verifies about twice as many tokens while acceptance was similar (2.56 vs. 2.46 tokens per step), which likely explains the gap.
+- **DFlash on `vllm-torchtpu`** worked with `TP=8` (233.6 tok/s for one request) but was limited to 32 running requests, so it queued at 64 requests and above. With `TP=2, DP=4` it failed at startup; the saved error output only shows a compiler warning, so we did not find the cause.
+- **`vllm-torchtpu` with one TensorCore per replica (`TP=1, DP=8`) is not supported** by this build ("No TPU topology found for count: 1").
+- **For `vllm-torchtpu`, a higher request limit helped only by letting more requests run at once.** At the same load the limit made no clear difference: at 512 requests, 128 and 256 per replica gave 11,426.5 and 11,394.8 tok/s; at 1,024 requests, 256 and 512 per replica gave 14,867.1 and 13,774.0; at 2,048 requests, 512 and 1,024 per replica gave 20,284.0 and 19,672.4. Throughput kept rising with load up to the highest load we tried: 24,357.1 tok/s at 4,096 requests (1,024 per replica), where the median time per output token was 160.1 ms.
+- **The high-load `sglang-torchtpu` setups could not be ranked at 512 requests.** With 4 attention groups and decode batch 128 or 256, or 8 attention groups and decode batch 64, they gave 10,988.6 to 11,619.3 tok/s, within 6% of each other, which is about the run-to-run variation.
+- **Under heavy load, `sglang-torchtpu` took much longer to return the first token.** At 1,024 requests, sglang with 4 attention groups and decode batch 256 gave 13,499.9 tok/s with a median 10.5 s to the first token, while `vllm-torchtpu` with 256 requests per replica gave 14,867.1 tok/s with 1.19 s. Both setups allowed at least 1,024 running requests. The client difference measured in section 4.5 (up to 52%) is much smaller than this gap.
+- **Long prompts.** The 22k-in / 4k-out latency target from section 2.C (time to first token at most 500 ms) is still not met. The lowest median time to first token for one 22k prompt was 542.5 ms (`sglang-torchtpu`, `TP=8`, compiled). Prefilling the 22k prompt in one 32k chunk did not help (653.7 ms). Data-parallel attention raised it to 2.0 to 3.4 s, because each prompt is prefilled by a smaller group of cores.
+- **Disk space on the host.** Kubernetes evicted one sglang pod for low disk space (its container was using 66 GiB), which cut short the DFlash-16 + 32k-chunk run; we did not repeat it. sglang keeps its `torch.compile` (inductor) cache under `/root/.cache/sglang` on the container's disk, and on a similar host that cache had reached 64 GiB. We now clear it between runs.
+- **Cold starts.** The first attempt of the 128-requests-per-replica `vllm-torchtpu` run timed out after vLLM's default 600 s engine start limit while it was still reading weights from Cloud Storage (about 130 s per file). We raised the limit to 3,600 s for later runs.
+- **JAX on a node from a multi-host node pool.** The first JAX attempt failed with "Error computing device indices for TPU_VISIBLE_CHIPS": GKE lists the node's 4 chips there, and vLLM's data-parallel launcher indexes 8 TensorCores into it. Unsetting `TPU_VISIBLE_CHIPS` fixed it ([`scripts/run_vllm_tpu_jax_high_load.sh`](./scripts/run_vllm_tpu_jax_high_load.sh)).
+- **An unexplained low point:** the first point of the 128-requests-per-replica `vllm-torchtpu` run (64 requests: 3,337.2 tok/s, 3.2 s to first token) was lower than the same layout with 64 requests per replica (4,173.6). We did not investigate it.
+- **Profiling:** the XProf trace attempted during the `vllm-torchtpu` `TP=8` run did not produce usable data.
+
+### 4.7 Licenses for this section
+
+- [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b): Apache-2.0. The model's usage policy adds: "By using OpenAI gpt-oss-120b, you agree to comply with all applicable law."
+- [`z-lab/gpt-oss-120b-DFlash`](https://huggingface.co/z-lab/gpt-oss-120b-DFlash): MIT.
+- Both were read before download. Neither has territorial, company-size or field-of-use restrictions. This repo does not redistribute weights.
