@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # JAX vllm-tpu, GPT-OSS 120B MXFP4 on one v7x host (4 chips), measured with `vllm bench serve`.
 # Server settings are the single-host MXFP4 settings from section B (TP=2, DP=4, FP8 KV cache, async scheduling);
-# only the running-request limit per replica (MAX_NUM_SEQS), the prompt length (INPUT_LEN) and the load points (LOADS)
-# change between runs:
+# only the running-request limit per replica (MAX_NUM_SEQS), the prompt and output lengths (INPUT_LEN, OUTPUT_LEN) and
+# the load points (LOADS) change between runs:
 #
 #   bash run_vllm_tpu_jax_high_load.sh                                      # 64 per replica (section B settings)
 #   MAX_NUM_SEQS=128 LOADS="256 512 1024" bash run_vllm_tpu_jax_high_load.sh
 #   MAX_NUM_SEQS=512 LOADS="512 1024 2048" bash run_vllm_tpu_jax_high_load.sh
 #   MAX_NUM_SEQS=128 INPUT_LEN=8192 LOADS="64 128 256 512" bash run_vllm_tpu_jax_high_load.sh
+#   MAX_NUM_SEQS=128 INPUT_LEN=22000 OUTPUT_LEN=4000 LOADS="8 16 32 64" bash run_vllm_tpu_jax_high_load.sh
 #
-# Each load point sends 2x as many prompts as there are concurrent requests (INPUT_LEN tokens in, 1,024 out).
+# Each load point sends 2x as many prompts as there are concurrent requests (INPUT_LEN tokens in, OUTPUT_LEN out).
 # Run inside a vllm/vllm-tpu container on a v7x host. If the node belongs to a multi-host node pool, the exports at
 # the top make the runtime use only this host's 4 chips.
 set -uo pipefail
@@ -17,6 +18,7 @@ MODEL_PATH="${MODEL_PATH:-/models/models/openai/gpt-oss-120b}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-64}"
 LOADS="${LOADS:-64 128 256 512}"
 INPUT_LEN="${INPUT_LEN:-1024}"
+OUTPUT_LEN="${OUTPUT_LEN:-1024}"
 OUT="${OUT:-./results/vllm_tpu_jax_isl${INPUT_LEN}_${MAX_NUM_SEQS}_per_replica}"
 export MEGASCALE_COORDINATOR_ADDRESS='' MEGASCALE_NUM_SLICES='' MEGASCALE_PORT='' MEGASCALE_SLICE_ID=''
 export TPU_PROCESS_ADDRESSES='' TPU_PROCESS_PORT='' TPU_WORKER_HOSTNAMES='' TPU_WORKER_ID=0
@@ -53,8 +55,9 @@ bench() {  # isl osl concurrency prompts tag
     --save-result --result-dir "$OUT" --result-filename "$5.json"
 }
 bench 1024 1024 8 16 warmup_isl1024_osl1024_c8_n16
-K="$((INPUT_LEN / 1024))k1k"
+kt() { if [ $(( $1 % 1024 )) -eq 0 ]; then echo "$(( $1 / 1024 ))k"; else echo "$(( $1 / 1000 ))k"; fi; }  # 1024->1k, 22000->22k
+K="$(kt "$INPUT_LEN")$(kt "$OUTPUT_LEN")"
 for c in $LOADS; do
-  bench "$INPUT_LEN" 1024 "$c" $((2 * c)) "ref_${K}_isl${INPUT_LEN}_osl1024_c${c}_n$((2 * c))"
+  bench "$INPUT_LEN" "$OUTPUT_LEN" "$c" $((2 * c)) "ref_${K}_isl${INPUT_LEN}_osl${OUTPUT_LEN}_c${c}_n$((2 * c))"
 done
 kill "$SRV"

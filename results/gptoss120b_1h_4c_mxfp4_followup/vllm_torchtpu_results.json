@@ -1534,5 +1534,90 @@
         "median_e2el_ms": 0.0
       }
     }
+  },
+  "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k": {
+    "arm": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k",
+    "model": "openai/gpt-oss-120b",
+    "license": "Apache-2.0",
+    "quantization": "native_mxfp4_kmajor_fp4_padded_2944",
+    "kv_cache_dtype": "fp8",
+    "tp": 2,
+    "dp": 4,
+    "devices": 8,
+    "startup_s": 116.18,
+    "sanity_outputs": {
+      "explain_tpu": "\n\nCloud TPU v7x uses two TensorCores per chip to increase the computational power and efficiency of the chip. This allows for faster and more efficient processing of large amounts of data, which is essential for training and deploying machine learning models.\n\nThe\n\nThe Cloud TPU v7x is a type of hardware accelerator",
+      "math_check": " 37 * 43 = 1591\n\nThe product of 37 and 43 is 1591.\n\nThe product of 37 and 43 is 1591.\n\nYes, that's correct!\n\nThe\n\nIt looks like your message got cut off. Could you let me know what you were going"
+    },
+    "points": {
+      "22k_4k_c8": {
+        "isl": 22000,
+        "osl": 4000,
+        "concurrency": 8,
+        "completed": 16,
+        "failed": 0,
+        "request_throughput_req_s": 0.208,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 833.15,
+        "total_token_throughput_tok_s": 5415.47,
+        "median_ttft_ms": 3425.31,
+        "p95_ttft_ms": 5875.23,
+        "median_tpot_ms": 8.76,
+        "p95_tpot_ms": 9.84,
+        "median_itl_ms": 7.97,
+        "median_e2el_ms": 0.0
+      },
+      "22k_4k_c16": {
+        "isl": 22000,
+        "osl": 4000,
+        "concurrency": 16,
+        "completed": 32,
+        "failed": 0,
+        "request_throughput_req_s": 0.374,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 1495.73,
+        "total_token_throughput_tok_s": 9722.26,
+        "median_ttft_ms": 3974.91,
+        "p95_ttft_ms": 7413.03,
+        "median_tpot_ms": 9.78,
+        "p95_tpot_ms": 10.6,
+        "median_itl_ms": 8.39,
+        "median_e2el_ms": 0.0
+      },
+      "22k_4k_c32": {
+        "isl": 22000,
+        "osl": 4000,
+        "concurrency": 32,
+        "completed": 64,
+        "failed": 0,
+        "request_throughput_req_s": 0.548,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 2193.1,
+        "total_token_throughput_tok_s": 14255.18,
+        "median_ttft_ms": 4138.52,
+        "p95_ttft_ms": 10710.6,
+        "median_tpot_ms": 13.56,
+        "p95_tpot_ms": 14.38,
+        "median_itl_ms": 11.61,
+        "median_e2el_ms": 0.0
+      },
+      "22k_4k_c64": {
+        "isl": 22000,
+        "osl": 4000,
+        "concurrency": 64,
+        "completed": 128,
+        "failed": 0,
+        "request_throughput_req_s": 0.706,
+        "request_goodput_req_s": 0.0,
+        "output_throughput_tok_s": 2825.04,
+        "total_token_throughput_tok_s": 18362.75,
+        "median_ttft_ms": 4287.8,
+        "p95_ttft_ms": 21132.32,
+        "median_tpot_ms": 20.84,
+        "p95_tpot_ms": 22.67,
+        "median_itl_ms": 16.55,
+        "median_e2el_ms": 0.0
+      }
+    }
   }
 }

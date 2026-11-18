@@ -233,7 +233,19 @@ ARMS = [
         "points_override": [
             {"label": "8k_1k_c2048", "isl": 8192, "osl": 1024, "conc": 2048, "prompts": 4096, "warmups": 64},
         ],
-    },    # Long-context serving at higher load (22k in / 4k out), 256 running requests per replica.
+    },
+    # Long-context serving at higher load (22k in / 4k out), 256 running requests per replica.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 256,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": f"22k_4k_c{c}", "isl": 22000, "osl": 4000, "conc": c, "prompts": 2 * c, "warmups": 4} for c in (8, 16, 32, 64)
+        ],
+    },
 ]
 
 

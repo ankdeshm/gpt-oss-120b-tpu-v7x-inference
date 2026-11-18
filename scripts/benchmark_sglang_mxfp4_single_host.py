@@ -49,6 +49,7 @@ C512 = [{"label": "1k_1k_c512", "isl": 1024, "osl": 1024, "conc": 512, "prompts"
 C1024 = [{"label": "1k_1k_c1024", "isl": 1024, "osl": 1024, "conc": 1024, "prompts": 2048}]
 C2048 = [{"label": "1k_1k_c2048", "isl": 1024, "osl": 1024, "conc": 2048, "prompts": 4096}]
 HIGH_8K = [{"label": f"8k_1k_c{c}", "isl": 8192, "osl": 1024, "conc": c, "prompts": 2 * c} for c in (64, 128, 256, 512)]
+HIGH_22K = [{"label": f"22k_4k_c{c}", "isl": 22000, "osl": 4000, "conc": c, "prompts": 2 * c} for c in (8, 16, 32, 64)]
 LONG = [
     {"label": "8k_1k_c1", "isl": 8192, "osl": 1024, "conc": 1, "prompts": 8},
     {"label": "22k_4k_c1", "isl": 22000, "osl": 4000, "conc": 1, "prompts": 6},
@@ -120,6 +121,12 @@ SETUPS: list[dict[str, Any]] = [
      "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "32768"]},
     # Decode batch 128 setup with 16,384-token prefill chunks and 8k-token prompts.
     {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_8k", "exp_spec": False, "points": HIGH_8K,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
+    # Decode graphs up to batch 256 and 2,048 running requests, with 16,384-token prefill chunks.
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs256_chunk16k", "exp_spec": False, "points": C1024 + C2048,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "256", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "2048", "--chunked-prefill-size", "16384"]},
+    # Decode batch 128 setup with 16,384-token prefill chunks, 22k-token prompts and 4k outputs at 8 to 64 requests.
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_22k", "exp_spec": False, "points": HIGH_22K,
      "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
     # Starting setup with 32k-token prefill chunks, so a 22k prompt is prefilled in one chunk.
     {"name": "sglang_mxfp4_tp8_ep8_compiled_chunk32k", "exp_spec": False, "points": LONG,

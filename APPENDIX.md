@@ -404,7 +404,7 @@ These runs came after sections 1 to 3. They use the native MXFP4 checkpoint (`op
 
 - **`vllm-torchtpu` now serves MXFP4.** [`scripts/patches/apply_vllm_torchtpu_gptoss_mxfp4_patch.py`](./scripts/patches/apply_vllm_torchtpu_gptoss_mxfp4_patch.py) registers the `gpt_oss_mxfp4` method for TPU, packs the experts into native 4-bit K-major FP4, pads `hidden_size` 2880 to 2944 (the same alignment issue as in section 1.B), fixes the 64-wide attention head KV layout, and lets the DFlash draft model share the target model's embeddings. Every sanity prompt returned the correct answer (37 × 43 = 1591) and readable text.
 - **`sglang-torchtpu` with data-parallel attention.** `--enable-dp-attention --dp-size 4` (or 8) splits attention into 4 groups of 2 TensorCores (or 8 single cores) while the experts stay split over all 8 cores (`EP=8`). With `TP=8`, sglang requires `--enable-dp-lm-head` for this.
-- **Larger batches and request limits.** In sglang, `--cuda-graph-max-bs-decode` sets the largest decode batch with a compiled graph and `--max-running-requests` caps requests in flight. In the vLLM stacks, `--max-num-seqs` caps running requests per data-parallel replica. We raised these limits and measured up to 4,096 concurrent requests, and 8k-token prompts at up to 2,048 requests.
+- **Larger batches and request limits.** In sglang, `--cuda-graph-max-bs-decode` sets the largest decode batch with a compiled graph and `--max-running-requests` caps requests in flight. In the vLLM stacks, `--max-num-seqs` caps running requests per data-parallel replica. We raised these limits and measured up to 4,096 concurrent requests, 8k-token prompts at up to 2,048 requests, and 22k-token prompts with 4k outputs at 8 to 64 requests.
 - **DFlash speculative decoding** with [`z-lab/gpt-oss-120b-DFlash`](https://huggingface.co/z-lab/gpt-oss-120b-DFlash), a small draft model that proposes 8 or 16 tokens at a time.
 - **Newer container images** than sections 1 to 3. To check that the change of image does not explain the differences, we re-ran the section B JAX `vllm-tpu` setup (`TP=2, DP=4`, 64 running requests per replica) with the same client: 5,788.5 tok/s at 64 requests vs. 5,847.0 in section B (1% apart).
 
@@ -442,6 +442,8 @@ These runs came after sections 1 to 3. They use the native MXFP4 checkpoint (`op
 | `sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_8k` | 8 | yes | 128 | 1,024 | – | – | measured |
 | `sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk32k` | 8 | yes | 128 | 1,024 | – | prefill chunk 32,768 | measured |
 | `sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_8k` | 8 | yes | 128 | 1,024 | – | prefill chunk 16,384 | measured |
+| `sglang_mxfp4_dp8_tp8_ep8_compiled_bs256_chunk16k` | 8 | yes | 256 | 2,048 | – | prefill chunk 16,384 | measured |
+| `sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_22k` | 8 | yes | 128 | 1,024 | – | prefill chunk 16,384 | measured |
 | `sglang_mxfp4_tp8_ep8_compiled_chunk32k` | 1 | yes | 8 | default | – | prefill chunk 32,768 | measured |
 | `sglang_mxfp4_tp8_ep8_dflash16_chunk32k` | 1 | yes | 8 | default | 16 | prefill chunk 32,768 | not completed (pod evicted) |
 
@@ -464,8 +466,9 @@ These runs came after sections 1 to 3. They use the native MXFP4 checkpoint (`op
 | `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs512_8k` | `TP=2, DP=4` | 512 | 8,192 | 0.88 | async scheduling | measured |
 | `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_8k_bt16384` | `TP=2, DP=4` | 256 | 16,384 | 0.88 | async scheduling | measured |
 | `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024_8k` | `TP=2, DP=4` | 1,024 | 8,192 | 0.88 | async scheduling | measured |
+| `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k` | `TP=2, DP=4` | 256 | 8,192 | 0.88 | async scheduling | measured |
 
-`vllm-tpu` (JAX): the single-host MXFP4 settings from section B ([`k8s/gpt-oss-120b-vllm-tpu-v7x.yaml`](./k8s/gpt-oss-120b-vllm-tpu-v7x.yaml)): `TP=2, DP=4`, 16,384 batched tokens per step, memory fraction 0.86, FP8 KV cache, async scheduling, chunked prefill, prefix cache off. Only the running-request limit per replica changed between runs (64, 128, 512 and 1,024); further runs used 8k-token prompts with 128 and 512 per replica. Script: [`scripts/run_vllm_tpu_jax_high_load.sh`](./scripts/run_vllm_tpu_jax_high_load.sh).
+`vllm-tpu` (JAX): the single-host MXFP4 settings from section B ([`k8s/gpt-oss-120b-vllm-tpu-v7x.yaml`](./k8s/gpt-oss-120b-vllm-tpu-v7x.yaml)): `TP=2, DP=4`, 16,384 batched tokens per step, memory fraction 0.86, FP8 KV cache, async scheduling, chunked prefill, prefix cache off. Only the running-request limit per replica changed between runs (64, 128, 512 and 1,024); further runs used 8k-token prompts with 128 and 512 per replica, and 22k-token prompts with 4k outputs at 128 per replica. Script: [`scripts/run_vllm_tpu_jax_high_load.sh`](./scripts/run_vllm_tpu_jax_high_load.sh).
 
 ### 4.4 Full results
 
@@ -581,6 +584,15 @@ TTFT is time to first token and TPOT is time per output token (both medians). "A
 | 8k / 1k, 128 | 3,123.5 | 28,111.4 | 4,574 | 33.79 |
 | 8k / 1k, 256 | 3,725.8 | 33,532.0 | 6,539 | 57.86 |
 | 8k / 1k, 512 | 3,937.3 | 35,435.8 | 10,076 | 111.85 |
+
+##### `sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_22k`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 22k / 4k, 8 | 903.0 | 5,869.6 | 3,777 | 7.91 |
+| 22k / 4k, 16 | 1,246.1 | 8,099.7 | 6,623 | 11.25 |
+| 22k / 4k, 32 | 1,758.1 | 11,427.9 | 9,605 | 15.86 |
+| 22k / 4k, 64 | 2,350.2 | 15,276.5 | 15,792 | 23.54 |
 
 ##### `sglang_mxfp4_tp8_ep8_compiled_baseline`
 
@@ -704,6 +716,13 @@ TTFT is time to first token and TPOT is time per output token (both medians). "A
 | :--- | ---: | ---: | ---: | ---: |
 | 1k / 1k, 512 | 13,404.3 | 26,808.6 | 3,850 | 33.94 |
 | 1k / 1k, 1,024 | 16,119.6 | 32,239.2 | 7,391 | 55.73 |
+
+##### `sglang_mxfp4_dp8_tp8_ep8_compiled_bs256_chunk16k`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 1k / 1k, 1,024 | 16,246.4 | 32,492.7 | 6,702 | 56.07 |
+| 1k / 1k, 2,048 | 16,046.6 | 32,093.1 | 14,608 | 113.22 |
 
 ##### `sglang_mxfp4_tp8_ep8_compiled_chunk32k`
 
@@ -861,6 +880,15 @@ TTFT is time to first token and TPOT is time per output token (both medians). "A
 | :--- | ---: | ---: | ---: | ---: |
 | 8k / 1k, 2,048 | 7,632.6 | 68,692.9 | 8,256 | 236.81 |
 
+##### `vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k`
+
+| Input / output, concurrent requests | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| :--- | ---: | ---: | ---: | ---: |
+| 22k / 4k, 8 | 833.2 | 5,415.5 | 3,425 | 8.76 |
+| 22k / 4k, 16 | 1,495.7 | 9,722.3 | 3,975 | 9.78 |
+| 22k / 4k, 32 | 2,193.1 | 14,255.2 | 4,139 | 13.56 |
+| 22k / 4k, 64 | 2,825.0 | 18,362.8 | 4,288 | 20.84 |
+
 #### `vllm-tpu` (JAX), `TP=2, DP=4` (measured with `vllm bench serve`)
 
 ##### 64 running requests per replica (section B settings), newer image
@@ -897,7 +925,7 @@ TTFT is time to first token and TPOT is time per output token (both medians). "A
 
 ##### 128 running requests per replica, 8k-token prompts (8k in / 1k out)
 
-| Concurrent requests (1k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| Concurrent requests (8k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 64 | 128 | 4,023.4 | 36,210.6 | 3,609 | 12.28 |
 | 128 | 256 | 4,133.2 | 37,199.0 | 7,911 | 23.36 |
@@ -906,10 +934,19 @@ TTFT is time to first token and TPOT is time per output token (both medians). "A
 
 ##### 512 running requests per replica, 8k-token prompts (8k in / 1k out)
 
-| Concurrent requests (1k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| Concurrent requests (8k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1,024 | 2,048 | 8,798.0 | 79,182.4 | 8,892 | 106.57 |
 | 2,048 | 4,096 | 9,743.8 | 87,694.1 | 6,405 | 194.71 |
+
+##### 128 running requests per replica, 22k-token prompts (22k in / 4k out)
+
+| Concurrent requests (22k in / 4k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 16 | 1,079.4 | 7,016.2 | 3,984 | 6.40 |
+| 16 | 32 | 1,672.0 | 10,868.2 | 6,957 | 7.83 |
+| 32 | 64 | 2,295.6 | 14,921.6 | 12,100 | 10.91 |
+| 64 | 128 | 3,120.4 | 20,282.5 | 17,771 | 16.24 |
 
 ### 4.5 Same-client check
 
@@ -925,7 +962,7 @@ Output throughput agreed within 3.4% and time per output token within 2.7%, whic
 
 ### 4.6 What worked and what did not
 
-- **JAX `vllm-tpu` gave the highest throughput from 64 to 2,048 concurrent requests,** without code patches. With 512 requests per replica it gave 17,190.0 tok/s at 512 requests and 22,163.6 at 1,024 (median 41.9 ms per output token); with 1,024 per replica it gave 22,952.2 at 2,048. The best `vllm-torchtpu` and `sglang-torchtpu` results at those loads were 11,426.5 and 13,479.4 (512 requests), 14,867.1 and 15,748.3 (1,024), and 20,284.0 and 12,860.8 (2,048). At 4,096 requests JAX gave 22,046.9 tok/s and `vllm-torchtpu` 24,357.1. At 1,024 requests JAX took longer to return the first token than `vllm-torchtpu` (median 4.2 s vs. 1.19 s, same client).
+- **JAX `vllm-tpu` gave the highest throughput from 64 to 2,048 concurrent requests,** without code patches. With 512 requests per replica it gave 17,190.0 tok/s at 512 requests and 22,163.6 at 1,024 (median 41.9 ms per output token); with 1,024 per replica it gave 22,952.2 at 2,048. The best `vllm-torchtpu` and `sglang-torchtpu` results at those loads were 11,426.5 and 13,479.4 (512 requests), 14,867.1 and 16,246.4 (1,024), and 20,284.0 and 16,046.6 (2,048). At 4,096 requests JAX gave 22,046.9 tok/s and `vllm-torchtpu` 24,357.1. At 1,024 requests JAX took longer to return the first token than `vllm-torchtpu` (median 4.2 s vs. 1.19 s, same client).
 - **`torch.compile` is essential for `sglang-torchtpu`.** Without it (`sglang_mxfp4_tp8_ep8_baseline`) a single request ran at 8.4 tok/s (118 ms per output token), vs. 190.0 tok/s (5.23 ms) with `--enable-torch-compile`.
 - **Data-parallel attention raises throughput under load and costs single-request speed.** At 64 requests, 4 attention groups with decode batch 64 gave 4,177.8 tok/s vs. 2,586.8 for plain `TP=8` (which only compiles decode graphs up to batch 8). With one request, time per output token went from 5.23 ms to 6.83 ms.
 - **DFlash helps one request at a time and hurts under load.** With `TP=8`, DFlash-16 raised single-request throughput from 190.0 to 272.9 tok/s (3.22 ms per token). Under load the extra verification work costs more than it saves: with 4 attention groups at 128 requests, DFlash-8 (decode batch 16) gave 5,132.3 tok/s vs. 6,103.0 without DFlash (decode batch 32). On random prompts the draft model accepted between 1.7 and 3.1 tokens per step, mostly 2.3 to 2.8.
@@ -934,10 +971,12 @@ Output throughput agreed within 3.4% and time per output token within 2.7%, whic
 - **`vllm-torchtpu` with one TensorCore per replica (`TP=1, DP=8`) is not supported** by this build ("No TPU topology found for count: 1").
 - **For `vllm-torchtpu`, a higher request limit helped only by letting more requests run at once.** At the same load the limit made no clear difference: at 512 requests, 128 and 256 per replica gave 11,426.5 and 11,394.8 tok/s; at 1,024 requests, 256 and 512 per replica gave 14,867.1 and 13,774.0; at 2,048 requests, 512 and 1,024 per replica gave 20,284.0 and 19,672.4. Throughput kept rising with load up to the highest load we tried: 24,357.1 tok/s at 4,096 requests (1,024 per replica), where the median time per output token was 160.1 ms.
 - **The step budget does not explain why JAX was faster.** With 16,384 batched tokens per step (the JAX setting) instead of 8,192, `vllm-torchtpu` with 512 requests per replica gave 13,320.5 tok/s at 1,024 requests and 19,814.5 at 2,048, vs. 13,774.0 and 20,284.0 with 8,192, which is within run-to-run variation. With 8k prompts, 16,384 tokens per step gave 4,630.8 and 5,962.8 tok/s at 256 and 512 requests, vs. 5,061.6 and 5,971.3 with 8,192.
-- **Larger prefill chunks helped `sglang-torchtpu` under heavy load.** With 8 attention groups and decode batch 128, `--chunked-prefill-size 16384` raised throughput at 1,024 requests from 13,869.7 to 15,748.3 tok/s (14% more) and cut the median time to first token there from 10.5 s to 7.1 s. 32,768-token chunks gave 16,119.6 tok/s at 1,024 requests (7.4 s to the first token), within run-to-run variation of the 16,384-token result. At 512 requests the gain (12,400.4 to 13,479.4) is within run-to-run variation. With 8k prompts, 16,384-token chunks left throughput about the same (2,590.7 to 3,937.3 vs. 2,482.9 to 3,823.3 tok/s from 64 to 512 requests) and lowered the median time to first token at 128 to 512 requests from 9.0 to 15.0 s to 4.6 to 10.1 s. With the default setting, the server log shows prefill chunks of 512 tokens per attention group. The other high-load sglang setups (different decode batches and attention groups, default chunks) gave 10,988.6 to 12,400.4 tok/s at 512 requests.
-- **`sglang-torchtpu` peaked around 1,024 requests.** With 8 attention groups, decode batch 256 and 2,048 running requests, it gave 13,861.0 tok/s at 1,024 requests and 12,860.8 at 2,048 (median 17.8 s to the first token).
-- **Under heavy load, `sglang-torchtpu` took much longer to return the first token.** At 1,024 requests its median time to first token was 6.2 to 10.5 s across setups (7.1 and 7.4 s with 16,384- and 32,768-token prefill chunks), vs. 1.19 s for `vllm-torchtpu` with 256 requests per replica. All these setups allowed at least 1,024 running requests. The client difference measured in section 4.5 (up to 52%) is much smaller than this gap.
+- **Larger prefill chunks helped `sglang-torchtpu` under heavy load.** With 8 attention groups and decode batch 128, `--chunked-prefill-size 16384` raised throughput at 1,024 requests from 13,869.7 to 15,748.3 tok/s (14% more) and cut the median time to first token there from 10.5 s to 7.1 s. 32,768-token chunks gave 16,119.6 tok/s at 1,024 requests (7.4 s to the first token), within run-to-run variation of the 16,384-token result. With decode batch 256 and 2,048 running requests, 16,384-token chunks gave 16,246.4 tok/s at 1,024 requests and 16,046.6 at 2,048, vs. 13,861.0 and 12,860.8 with the default chunks (17% and 25% more). At 512 requests the gain (12,400.4 to 13,479.4) is within run-to-run variation. With 8k prompts, 16,384-token chunks left throughput about the same (2,590.7 to 3,937.3 vs. 2,482.9 to 3,823.3 tok/s from 64 to 512 requests) and lowered the median time to first token at 128 to 512 requests from 9.0 to 15.0 s to 4.6 to 10.1 s. With the default setting, the server log shows prefill chunks of 512 tokens per attention group. The other high-load sglang setups (different decode batches and attention groups, default chunks) gave 10,988.6 to 12,400.4 tok/s at 512 requests.
+- **`sglang-torchtpu` stopped gaining above 1,024 requests.** With 8 attention groups, decode batch 256 and 2,048 running requests, it gave 13,861.0 tok/s at 1,024 requests and 12,860.8 at 2,048 (median 17.8 s to the first token) with the default prefill chunks, and 16,246.4 and 16,046.6 with 16,384-token chunks (median 6.7 s and 14.6 s to the first token).
+- **Under heavy load, `sglang-torchtpu` took much longer to return the first token.** At 1,024 requests its median time to first token was 6.2 to 10.5 s across setups (6.7 to 7.4 s with 16,384- and 32,768-token prefill chunks), vs. 1.19 s for `vllm-torchtpu` with 256 requests per replica. All these setups allowed at least 1,024 running requests. The client difference measured in section 4.5 (up to 52%) is much smaller than this gap.
 - **Long prompts at higher load (8k in / 1k out).** JAX `vllm-tpu` (128 requests per replica) gave 4,023.4 to 7,447.1 tok/s from 64 to 512 requests, and with 512 per replica 8,798.0 at 1,024 and 9,743.8 at 2,048. `vllm-torchtpu` (256 per replica) gave 3,117.3 to 5,971.3, then 6,881.7 at 1,024 (512 per replica) and 7,632.6 at 2,048 (1,024 per replica, median 236.8 ms per output token). `sglang-torchtpu` (8 attention groups, decode batch 128) gave 2,482.9 to 3,823.3, with a median 5.9 to 15.0 s to the first token. Section B measured 2,696.6 tok/s at 64 requests with 8k prompts using 96 prompts and an older image; these runs used 2 prompts per concurrent request, so the numbers are not directly comparable.
+- **22k-token prompts with 4k outputs at 8 to 64 requests.** JAX `vllm-tpu` (128 requests per replica) gave the most throughput at every load: 1,079.4 tok/s at 8 requests and 3,120.4 at 64. `vllm-torchtpu` (256 per replica) gave 833.2 and 2,825.0, and `sglang-torchtpu` (8 attention groups, decode batch 128, 16,384-token prefill chunks) 903.0 and 2,350.2. JAX had the lowest time per output token (6.4 ms at 8 requests, 16.2 ms at 64, vs. 8.8 and 20.8 ms for `vllm-torchtpu`), but its time to first token grew fastest with load: a median 4.0 s at 8 requests and 17.8 s at 64, vs. 3.4 s and 4.3 s for `vllm-torchtpu` (same client). sglang took 3.8 s and 15.8 s with its own client (section 4.5 explains why first-token times should not be compared across clients). None of these runs was limited by its running-request limit.
+- **sglang's sliding-window KV pool follows the decode batch.** GPT-OSS alternates full-attention and sliding-window layers, and sglang keeps a separate, smaller KV pool for the sliding-window layers. Its server logs show that pool sized at roughly 390 to 420 tokens per decode-graph slot: per attention group, 13,312 tokens at decode batch 32, 25,600 at 64, 49,664 at 128 and 98,816 at 256 (8 attention groups, default prefill chunks), and 52,736 and 56,832 with 16,384- and 32,768-token chunks at decode batch 128. The full-attention pool was about 1.0 million tokens per group in all of these. The server logs of the five 8-attention-group runs that went up to 1,024 or 2,048 requests each contain "KV cache pool is full. Retract requests" (61 to 93 times per run); we did not check which of the two pools ran out.
 - **Long prompts.** The 22k-in / 4k-out latency target from section 2.C (time to first token at most 500 ms) is still not met. The lowest median time to first token for one 22k prompt was 542.5 ms (`sglang-torchtpu`, `TP=8`, compiled). Prefilling the 22k prompt in one 32k chunk did not help (653.7 ms). Data-parallel attention raised it to 2.0 to 3.4 s, because each prompt is prefilled by a smaller group of cores.
 - **Disk space on the host.** Kubernetes evicted one sglang pod for low disk space (its container was using 66 GiB), which cut short the DFlash-16 + 32k-chunk run; we did not repeat it. sglang keeps its `torch.compile` (inductor) cache under `/root/.cache/sglang` on the container's disk, and on a similar host that cache had reached 64 GiB. We now clear it between runs.
 - **Cold starts.** The first attempt of the 128-requests-per-replica `vllm-torchtpu` run timed out after vLLM's default 600 s engine start limit while it was still reading weights from Cloud Storage (about 130 s per file). We raised the limit to 3,600 s for later runs.
