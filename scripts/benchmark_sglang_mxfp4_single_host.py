@@ -128,6 +128,35 @@ SETUPS: list[dict[str, Any]] = [
     # Decode batch 128 setup with 16,384-token prefill chunks, 22k-token prompts and 4k outputs at 8 to 64 requests.
     {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_22k", "exp_spec": False, "points": HIGH_22K,
      "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
+    # The same setup at 128 and 256 requests with 22k-token prompts (a separate server start).
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_22k_hi", "exp_spec": False,
+     "points": [{"label": f"22k_4k_c{c}", "isl": 22000, "osl": 4000, "conc": c, "prompts": 2 * c} for c in (128, 256)],
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
+    # Second run of sglang_mxfp4_dp8_tp8_ep8_compiled_bs256_chunk16k with the same flags and loads (run-to-run check).
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs256_chunk16k_repeat", "exp_spec": False, "points": C1024 + C2048,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "256", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "2048", "--chunked-prefill-size", "16384"]},
+    # Decode batch 128 with 16,384-token prefill chunks at 256 requests (high-load point of the v5p vs. v7x comparison).
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_c256", "exp_spec": False,
+     "points": [{"label": "1k_1k_c256", "isl": 1024, "osl": 1024, "conc": 256, "prompts": 512}],
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
+    # The decode batch 128 and 256 high-load setups with a BF16 KV cache (v5p vs. v7x comparison: on v5p, BF16 KV
+    # gave more throughput than FP8).
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs128_chunk16k_bf16kv", "exp_spec": False, "points": C256 + C512 + C1024,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "bfloat16", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "128", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "1024", "--chunked-prefill-size", "16384"]},
+    {"name": "sglang_mxfp4_dp8_tp8_ep8_compiled_bs256_chunk16k_bf16kv", "exp_spec": False, "points": C1024 + C2048,
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "bfloat16", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "256", "--enable-dp-attention", "--dp-size", "8", "--enable-dp-lm-head", "--max-running-requests", "2048", "--chunked-prefill-size", "16384"]},
+    # Same flags as the v5p sglang setups in benchmark_sglang_v5p.py, on all 8 TensorCores (v5p vs. v7x comparison).
+    {"name": "sglang_mxfp4_tp8_ep8_compiled_bs64_r256", "exp_spec": False,
+     "points": [{"label": "1k_1k_c1", "isl": 1024, "osl": 1024, "conc": 1, "prompts": 12}] + [{"label": f"1k_1k_c{c}", "isl": 1024, "osl": 1024, "conc": c, "prompts": max(2 * c, 32)} for c in (8, 32, 64, 128, 256)] + [{"label": "22k_4k_c1", "isl": 22000, "osl": 4000, "conc": 1, "prompts": 6}],
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "64", "--max-running-requests", "256"]},
+    # Same with "--kv-cache-dtype auto" (the server resolves it to FP8 e4m3 for this checkpoint): a second run of the above.
+    {"name": "sglang_mxfp4_tp8_ep8_compiled_bs64_r256_kv_auto", "exp_spec": False,
+     "points": [{"label": "1k_1k_c1", "isl": 1024, "osl": 1024, "conc": 1, "prompts": 12}] + [{"label": f"1k_1k_c{c}", "isl": 1024, "osl": 1024, "conc": c, "prompts": max(2 * c, 32)} for c in (8, 32, 64, 128, 256)] + [{"label": "22k_4k_c1", "isl": 22000, "osl": 4000, "conc": 1, "prompts": 6}],
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "auto", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "64", "--max-running-requests", "256"]},
+    # Same with a BF16 KV cache.
+    {"name": "sglang_mxfp4_tp8_ep8_compiled_bs64_r256_bf16kv", "exp_spec": False,
+     "points": [{"label": "1k_1k_c1", "isl": 1024, "osl": 1024, "conc": 1, "prompts": 12}] + [{"label": f"1k_1k_c{c}", "isl": 1024, "osl": 1024, "conc": c, "prompts": max(2 * c, 32)} for c in (8, 32, 64, 128, 256)],
+     "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "bfloat16", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "64", "--max-running-requests", "256"]},
     # Starting setup with 32k-token prefill chunks, so a 22k prompt is prefilled in one chunk.
     {"name": "sglang_mxfp4_tp8_ep8_compiled_chunk32k", "exp_spec": False, "points": LONG,
      "args": ["--tp-size", "8", "--ep-size", "8", "--kv-cache-dtype", "fp8_e4m3", "--context-length", "26624", "--mem-fraction-static", "0.74", "--disable-radix-cache", "--enable-torch-compile", "--cuda-graph-max-bs-decode", "8", "--chunked-prefill-size", "32768"]},

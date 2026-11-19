@@ -246,6 +246,95 @@ ARMS = [
             {"label": f"22k_4k_c{c}", "isl": 22000, "osl": 4000, "conc": c, "prompts": 2 * c, "warmups": 4} for c in (8, 16, 32, 64)
         ],
     },
+    # Same server settings, 128 and 256 concurrent requests.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k_hi",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 256,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": f"22k_4k_c{c}", "isl": 22000, "osl": 4000, "conc": c, "prompts": 2 * c, "warmups": 8} for c in (128, 256)
+        ],
+    },
+    # Second run of the 1,024-per-replica setup, same settings and loads, to measure run-to-run variation.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs1024_repeat",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 1024,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "1k_1k_c2048", "isl": 1024, "osl": 1024, "conc": 2048, "prompts": 4096, "warmups": 64},
+            {"label": "1k_1k_c4096", "isl": 1024, "osl": 1024, "conc": 4096, "prompts": 8192, "warmups": 128},
+        ],
+    },
+    # 22k in / 4k out at 512 requests, same settings as the 8 to 256 request runs.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k_c512",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 256,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "22k_4k_c512", "isl": 22000, "osl": 4000, "conc": 512, "prompts": 1024, "warmups": 16},
+        ],
+    },
+    # The TP=4, DP=2 layout (expert parallel, 16,384 tokens per step) with 2,048 running requests per replica, at the
+    # loads where TP=2, DP=4 gave the highest results.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp4_dp2_async_seqs2048",
+        "tp": 4,
+        "dp": 2,
+        "max_num_seqs": 2048,
+        "max_batched_tokens": 16384,
+        "extra_flags": ["--enable-expert-parallel", "--async-scheduling"],
+        "points_override": [
+            {"label": "1k_1k_c2048", "isl": 1024, "osl": 1024, "conc": 2048, "prompts": 4096, "warmups": 64},
+            {"label": "1k_1k_c4096", "isl": 1024, "osl": 1024, "conc": 4096, "prompts": 8192, "warmups": 128},
+        ],
+    },
+    # 22k in / 4k out at 1,024 requests, same settings as the 8 to 512 request runs.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs256_22k_c1024",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 256,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "22k_4k_c1024", "isl": 22000, "osl": 4000, "conc": 1024, "prompts": 2048, "warmups": 32},
+        ],
+    },
+    # The same layout with 2,048 running requests per replica (8,192 in total), measured at 4,096 and 8,192 requests.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs2048",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 2048,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "1k_1k_c4096", "isl": 1024, "osl": 1024, "conc": 4096, "prompts": 8192, "warmups": 128},
+            {"label": "1k_1k_c8192", "isl": 1024, "osl": 1024, "conc": 8192, "prompts": 16384, "warmups": 128},
+        ],
+    },
+    # Second run of the 2,048-per-replica setup, same settings and loads, to measure run-to-run variation.
+    {
+        "name": "vllm_torchtpu_mxfp4_tp2_dp4_async_seqs2048_repeat",
+        "tp": 2,
+        "dp": 4,
+        "max_num_seqs": 2048,
+        "max_batched_tokens": 8192,
+        "extra_flags": ["--async-scheduling"],
+        "points_override": [
+            {"label": "1k_1k_c4096", "isl": 1024, "osl": 1024, "conc": 4096, "prompts": 8192, "warmups": 128},
+            {"label": "1k_1k_c8192", "isl": 1024, "osl": 1024, "conc": 8192, "prompts": 16384, "warmups": 128},
+        ],
+    },
 ]
 
 

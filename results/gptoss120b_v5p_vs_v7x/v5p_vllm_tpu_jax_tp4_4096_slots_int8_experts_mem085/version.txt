@@ -1,0 +1,8 @@
+vllm 0.33.0rc1.dev430+g7b77ed581
+jax                                      0.11.2
+jaxlib                                   0.11.2
+libtpu                                   0.0.48
+tpu_inference                            0.0.0                           /workspace/tpu_inference
+CHIP=v5p TPU_ACCELERATOR_TYPE=v5p-8 TPU_MULTIPROCESS_DP=0 TP=4 DP=1 MAX_NUM_SEQS=4096 KV_DTYPE=fp8 MEM=0.85
+MOE_REQUANTIZE_WEIGHT_DTYPE=int8 MOE_REQUANTIZE_BLOCK_SIZE=256
+startup_s 610
