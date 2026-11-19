@@ -415,6 +415,7 @@ These runs came after sections 1 to 3. They use the native MXFP4 checkpoint (`op
 - Most points are one run. We repeated the best high-load setup of each stack with a fresh server and the same loads:
   - `vllm-torchtpu`, 1,024 requests per replica: 19,672.4 and 19,667.6 tok/s at 2,048 requests, 24,357.1 and 23,875.7 at 4,096 (2.0% apart).
   - JAX `vllm-tpu`, 1,024 per replica: 22,952.2 and 22,059.4 at 2,048 (3.9% apart), 22,046.9 and 21,420.5 at 4,096 (2.8%).
+  - JAX `vllm-tpu`, 512 per replica: 17,190.0 and 17,588.6 at 512 (2.3%), 22,163.6 and 21,688.5 at 1,024 (2.1%), 21,387.7 and 22,276.0 at 2,048 (4.2%).
   - `sglang-torchtpu`, 8 attention groups, decode batch 256, 16,384-token chunks: 16,246.4 and 16,029.4 at 1,024 (1.3%), 16,046.6 and 15,670.0 at 2,048 (2.3%).
   - `vllm-torchtpu`, 2,048 requests per replica: 21,451.4 and 21,580.3 tok/s at 4,096 requests (0.6% apart), 26,738.2 and 26,626.0 at 8,192 (0.4%).
   - JAX `vllm-tpu`, 22k in / 4k out at 512 requests (128 per replica): 5,648.1 and 5,640.1 tok/s (0.1%).
@@ -992,6 +993,14 @@ TTFT is time to first token and TPOT is time per output token (both medians). "A
 | 512 | 1,024 | 17,190.0 | 34,379.9 | 2,687 | 27.02 |
 | 1,024 | 2,048 | 22,163.6 | 44,327.1 | 4,223 | 41.88 |
 | 2,048 | 4,096 | 21,387.7 | 42,775.4 | 7,829 | 87.60 |
+
+##### 512 running requests per replica, second run (fresh server, same settings)
+
+| Concurrent requests (1k in / 1k out) | Prompts | Output tok/s | Total tok/s | Median TTFT (ms) | Median TPOT (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 1,024 | 17,588.6 | 35,177.3 | 2,281 | 26.85 |
+| 1,024 | 2,048 | 21,688.5 | 43,376.9 | 3,615 | 43.18 |
+| 2,048 | 4,096 | 22,276.0 | 44,552.0 | 6,340 | 85.34 |
 
 ##### 1,024 running requests per replica
 
