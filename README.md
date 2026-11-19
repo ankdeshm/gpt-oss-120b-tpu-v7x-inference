@@ -216,6 +216,7 @@ python3 scripts/benchmark_sglang_mxfp4_single_host.py --setups sglang_mxfp4_tp8_
 
 ## 4. Detailed Ablations, Engineering Notes, and Raw Logs
 
+- **[`WORKING_LOG.md`](./WORKING_LOG.md):** a plain-language log of what we tried, what failed and why, and what worked.
 - **[`APPENDIX.md`](./APPENDIX.md):** Complete per-suite concurrency and open-loop Poisson RPS tables across all 13 valid runs, MXFP4 vs. BF16 stack compatibility deep dive, `hidden_size = 2880 → 2944` Pallas tile-alignment correctness analysis (including the unpatched `!`-token run), `EAGLE3` ablation, and `22k/4k` goodput breakdown.
 - **[`INFRA_SETUP.md`](./INFRA_SETUP.md)** & **[`scripts/patches/README.md`](./scripts/patches/README.md):** Step-by-step GKE + DWS Calendar reservation setup and code-level documentation of the TorchTPU load-time patches.
 - **[`results/`](./results/):** Raw `vllm bench serve` JSONs and `summary.json` files for all runs (re-summarizable via `python3 scripts/summarize_results.py results`).
