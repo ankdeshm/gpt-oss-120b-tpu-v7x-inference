@@ -1426,3 +1426,38 @@ The sglang runs differed by at most 2.2% on v7x and 2.8% on v5p. The JAX runs di
 ### 5.5 License
 
 Same checkpoint as sections B, C and 4: [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b), Apache-2.0 (see 4.7). It was read before download and has no territorial, company-size or field-of-use restrictions.
+
+---
+
+## 6. Additional `vllm-torchtpu` `TP=8` `22k/4k` Results (4-Host 16-Chip MXFP4, BF16 KV Cache, and BF16 Weights)
+
+These runs use patched `vllm-torchtpu` (`TP=8` per 4-chip host, `--enable-expert-parallel`, `--no-enable-prefix-caching`) on `22,000`-token input / `4,000`-token output prompts (`vllm bench serve`, random tokens, `--ignore-eos`).
+
+### 6.1 4-Host (16-Chip) `vllm-torchtpu` MXFP4 `TP=8` with FP8 KV Cache
+
+Four independent 4-chip hosts behind [`scripts/lb_proxy.py`](./scripts/lb_proxy.py) (`least_conn`). Raw outputs: [`results/gptoss120b_4h_16c_torchtpu_mxfp4_fp8kv_tp8/`](./results/gptoss120b_4h_16c_torchtpu_mxfp4_fp8kv_tp8/).
+
+| Workload (`22k/4k`) | Output tok/s | tok/s per chip | TTFT P50 / P95 (ms) | TPOT P50 / P95 (ms) | E2E P50 / P95 (s) |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| CON 1 (10 prompts) | 201.7 | 12.6 | 721 / 734 | 4.77 / 4.80 | 19.8 / 19.9 |
+| CON 6 (48 prompts) | 1,050.9 | 65.7 | 724 / 1,173 | 5.40 / 5.62 | 22.4 / 23.2 |
+| CON 16 (64 prompts) | 2,182.0 | 136.4 | 1,760 / 2,542 | 6.88 / 7.18 | 29.3 / 29.5 |
+| CON 32 (80 prompts) | 2,613.9 | 163.4 | 3,123 / 4,923 | 9.43 / 10.04 | 40.9 / 41.2 |
+| RPS 1 (48 prompts) | 2,343.3 | 146.5 | 731 / 3,439 | 10.08 / 11.11 | 42.1 / 45.1 |
+| RPS 2 (56 prompts) | 3,196.7 | 199.8 | 735 / 790 | 12.42 / 12.98 | 50.4 / 52.6 |
+| RPS 6 (60 prompts) | 3,842.6 | 240.2 | 1,249 / 1,857 | 13.93 / 14.90 | 57.6 / 60.5 |
+
+### 6.2 One Host (4 Chips): `vllm-torchtpu` `TP=8` on `22k/4k` — MXFP4 (FP8 KV vs. BF16 KV) vs. BF16 Weights + BF16 KV
+
+Raw outputs: [`results/gptoss120b_1h_4c_mxfp4_followup/vllm_torchtpu_results.json`](./results/gptoss120b_1h_4c_mxfp4_followup/vllm_torchtpu_results.json) and [`results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_lowconc/`](./results/gptoss120b_bf16_1h_4c_torchtpu_bf16kv_tp8_ep_lowconc/).
+
+| Concurrent reqs (1 host) | MXFP4 + FP8 KV (out tok/s, TTFT / TPOT P50) | MXFP4 + BF16 KV (out tok/s, TTFT / TPOT P50) | BF16 weights + BF16 KV (out tok/s, TTFT / TPOT P50) |
+| ---: | :--- | :--- | :--- |
+| 1 | 201.9 (708 ms / 4.77 ms) | 200.3 (702 ms / 4.82 ms) | 162.1 (874 ms / 5.95 ms) |
+| 2 | 346.5 (1,015 ms / 5.52 ms) | 343.3 (1,012 ms / 5.57 ms) | 264.9 (1,265 ms / 7.22 ms) |
+| 4 | 547.4 (1,742 ms / 6.87 ms) | 541.5 (1,743 ms / 6.94 ms) | 399.2 (2,173 ms / 9.47 ms) |
+| 6 | 685.2 (2,435 ms / 8.13 ms) | 674.9 (2,431 ms / 8.29 ms) | 481.4 (3,030 ms / 11.72 ms) |
+| 16 | 1,005.9 (3,707 ms / 14.80 ms) | 990.7 (3,651 ms / 15.14 ms) | 672.3 (3,644 ms / 22.76 ms) |
+
+- **BF16 KV cache overhead:** switching KV cache from FP8 to BF16 with MXFP4 weights changed throughput by at most 1.5% and TPOT by at most 2.3% across `CON=1..16`.
+- **MXFP4 vs. BF16 weights:** at `CON=4` per host (matching `CON=16` across 4 hosts), MXFP4 + FP8 KV reached `547.4 tok/s` (`6.87 ms` TPOT) vs. `399.2 tok/s` (`9.47 ms` TPOT) for BF16 weights + BF16 KV (+37.1% throughput). `lmsys/gpt-oss-120b-bf16` is `119 GB` on disk (experts stored in FP8 E5M2 and upcast to `~234 GB` BF16 in memory) and is derived from OpenAI's native MXFP4 release.
