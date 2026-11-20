@@ -1,8 +1,8 @@
 # GPT-OSS 120B on Google Cloud TPU v7x
 
-Single-host (`4` chips) and multi-host (`8` and `16` chips) serving benchmarks for [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (unquantized BF16) and [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) (native MXFP4) on Google Cloud Ironwood TPU (`v7x`) across `sglang-torchtpu`, `vllm-torchtpu`, and `vllm-tpu` (JAX). Section C adds follow-up single-host runs with the MXFP4 checkpoint: higher loads, a load-time patch that lets `vllm-torchtpu` serve MXFP4, and DFlash speculative decoding.
+Single-host (`4` chips) and multi-host (`8` and `16` chips) serving benchmarks for [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (`119 GB` on disk; experts stored in FP8 and loaded as `~234 GB` BF16) and [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) (native MXFP4) on Google Cloud Ironwood TPU (`v7x`) across `sglang-torchtpu`, `vllm-torchtpu`, and `vllm-tpu` (JAX). Section C adds follow-up single-host runs with the MXFP4 checkpoint: higher loads, a load-time patch that lets `vllm-torchtpu` serve MXFP4, and DFlash speculative decoding.
 
-**Summary:** On unquantized BF16 (`233.7 GB`, 1 host / 4 chips), `sglang-torchtpu` (`TP=8, EP=8` with load-time `swigluoai` deinterleaving and 128-tile alignment) achieves **4.97 ms decode TPOT and 739.5 ms TTFT on `22k/4k` (1.72× faster TPOT and 16.0% lower TTFT than the 8.54 ms / 880.5 ms `vllm-tpu` JAX BF16 baseline)** and scales linearly to **5,084.5 output tok/s on `1k/1k` across 2 hosts (`2.01×` vs. 1 host at 32 requests/replica)**. `vllm-tpu` (JAX) reaches **5,567.6 output tok/s on 2-host BF16 (`CON=128`)** and **20,366.9 output tok/s on 4-host (`16`-chip) MXFP4 + FP8 KV (`3.48×` vs. 1 host)**.
+**Summary:** On BF16-loaded weights (`lmsys/gpt-oss-120b-bf16`, `~234 GB` in memory, 1 host / 4 chips), `sglang-torchtpu` (`TP=8, EP=8` with load-time `swigluoai` deinterleaving and 128-tile alignment) achieves **4.97 ms decode TPOT and 739.5 ms TTFT on `22k/4k` (1.72× faster TPOT and 16.0% lower TTFT than the 8.54 ms / 880.5 ms `vllm-tpu` JAX BF16 baseline)** and scales linearly to **5,084.5 output tok/s on `1k/1k` across 2 hosts (`2.01×` vs. 1 host at 32 requests/replica)**. `vllm-tpu` (JAX) reaches **5,567.6 output tok/s on 2-host BF16 (`CON=128`)** and **20,366.9 output tok/s on 4-host (`16`-chip) MXFP4 + FP8 KV (`3.48×` vs. 1 host)**. Across 4 hosts (`16` chips) on `22k/4k`, patched `vllm-torchtpu` (`TP=8` per host) cuts `CON=1` TTFT nearly in half vs. 4-host JAX `TP=2, DP=4` (**721 ms** vs. 1,381 ms; **4.77 ms** TPOT) and delivers **2,182.0 tok/s** at `CON=16` (`6.88 ms` TPOT) and **3,842.6 tok/s** at `RPS=6`.
 
 **Follow-up on one host (section C):** with higher request limits, JAX `vllm-tpu` gave the most throughput from 64 to 2,048 concurrent requests: 22,163.6 output tok/s at 1,024 (median 41.9 ms per output token) and **22,952.2 at 2,048**, vs. 5,847.0 at 64 in section B. `vllm-torchtpu` with a new MXFP4 load-time patch kept scaling to **26,738.2 tok/s at 8,192 requests** (26,626.0 in a second run), at a median 275.9 ms per output token and 15.1 s to the first token. With 22k-token prompts and 4k outputs, JAX `vllm-tpu` also gave the most throughput from 8 to 512 requests (5,648.1 tok/s at 512), while `vllm-torchtpu` returned the first token sooner under load (median 5.8 s vs. 9.8 s at 512 requests). For single requests, `sglang-torchtpu` with DFlash speculative decoding gave the lowest time per output token (3.22 ms, vs. 5.23 ms without DFlash).
 
@@ -16,8 +16,8 @@ Single-host (`4` chips) and multi-host (`8` and `16` chips) serving benchmarks f
 - **Model:** GPT-OSS 120B sparse Mixture-of-Experts causal language model.
   - **Parameters & Architecture:** **117B total parameters** with **5.1B active parameters per token** across `36` transformer layers (`128` routed experts per layer, top-4 routing, `hidden_size = 2880`, `intermediate_size = 2880`, `64` query heads / `8` KV heads of dim `64`, custom interleaved `swigluoai` activation).
   - **Checkpoints & Precision:**
-    1. **Unquantized `bfloat16` (primary):** [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (`~233.7 GB`, MoE experts dequantized from MXFP4 to BF16) with `bfloat16` KV cache (plus optional `fp8` KV cache).
-    2. **Native `MXFP4` *(optional, non-BF16)*:** [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) (`~65.3 GB`, 4-bit `E2M1` + `E8M0` scale MoE experts and `bfloat16` attention) with `fp8` KV cache, plus optional [`lmsys/EAGLE3-gpt-oss-120b-bf16`](https://huggingface.co/lmsys/EAGLE3-gpt-oss-120b-bf16) draft model.
+    1. **BF16-loaded checkpoint:** [`lmsys/gpt-oss-120b-bf16`](https://huggingface.co/lmsys/gpt-oss-120b-bf16) (`119 GB` on disk — expert weights are stored in 8-bit FP8 E5M2 and upcast to `~234 GB` BF16 when loaded; derived from OpenAI's MXFP4 release) with `bfloat16` KV cache (plus optional `fp8` KV cache).
+    2. **Native `MXFP4` *(official OpenAI release)*:** [`openai/gpt-oss-120b`](https://huggingface.co/openai/gpt-oss-120b) (`~65.3 GB`, 4-bit `E2M1` + `E8M0` scale MoE experts and `bfloat16` attention) with `fp8` or `bfloat16` KV cache, plus optional [`lmsys/EAGLE3-gpt-oss-120b-bf16`](https://huggingface.co/lmsys/EAGLE3-gpt-oss-120b-bf16) draft model.
     3. **DFlash draft model *(section C)*:** [`z-lab/gpt-oss-120b-DFlash`](https://huggingface.co/z-lab/gpt-oss-120b-DFlash), a small draft model that proposes 8 or 16 tokens per step for speculative decoding with the MXFP4 checkpoint.
   - **Licenses (read before download):** `openai/gpt-oss-120b` is Apache-2.0, and its usage policy adds "By using OpenAI gpt-oss-120b, you agree to comply with all applicable law." `z-lab/gpt-oss-120b-DFlash` is MIT. `lmsys/gpt-oss-120b-bf16` (a BF16 conversion of the Apache-2.0 weights) and `lmsys/EAGLE3-gpt-oss-120b-bf16` do not state a license on their model cards. The stated licenses have no territorial or company-size restrictions. This repo does not redistribute weights.
 - **Frameworks:**
@@ -34,7 +34,7 @@ Single-host (`4` chips) and multi-host (`8` and `16` chips) serving benchmarks f
 
 All runs in sections A and B use `vllm bench serve` with `--no-enable-prefix-caching`, uncached random tokens (`0%` cache hit), and `--ignore-eos` (`0` failed requests; raw outputs in [`results/`](./results/)).
 
-### A. Unquantized BF16 Weights (`lmsys/gpt-oss-120b-bf16`, `233.7 GB`) Across 1 & 2 Hosts
+### A. BF16-Loaded Weights (`lmsys/gpt-oss-120b-bf16`, `119 GB` on disk / `~234 GB` in memory) Across 1 & 2 Hosts
 
 | Scale (`Chips`) | Serving Stack & Layout | KV Cache | `22k/4k` `CON=1` TTFT / TPOT P50 | `22k/4k` Closed-Loop Peak Out TPS | `1k/1k` `CON=1` TPOT P50 | `1k/1k` Peak Out TPS | `8k/1k` Peak Out TPS | Comparison vs. 1-Host `vllm-tpu` JAX BF16 |
 | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | :--- |
@@ -47,7 +47,7 @@ All runs in sections A and B use `vllm bench serve` with `--no-enable-prefix-cac
 | **2 Hosts (`8`)** | **`2x sglang-torchtpu` `TP=8, EP=8`** | **BF16** | 771.4 ms / 5.05 ms | **2,433.8** (`CON=32`) | 5.77 ms (`CON=8`) | 5,084.5 (`CON=64`) | **3,281.0** (`CON=128`) | **2.01× `1k/1k` & 1.94× `22k/4k`** vs. 1-host `sglang` (32 req/rep) |
 | **2 Hosts (`8`)** | **`2x vllm-tpu` (JAX) `TP=8, EP`** | **BF16** | 882.6 ms / 5.99 ms | 1,460.5 (`CON=64`) | 6.63 ms (`CON=8`) | **5,567.6** (`CON=128`) | 2,814.4 (`CON=128`) | **2.26× `1k/1k` peak** (`1.80×` at 32 req/rep) vs. 1-host JAX |
 
-### B. Optional: Native MXFP4 Experts (`openai/gpt-oss-120b`, `65.3 GB`) with FP8 KV Across 1, 2 & 4 Hosts
+### B. Native MXFP4 Experts (`openai/gpt-oss-120b`, `65.3 GB`) with FP8 KV Across 1, 2 & 4 Hosts
 
 | Scale (`Chips`) | Serving Stack & Layout | `22k/4k` `CON=1` TTFT / TPOT P50 | `22k/4k` Closed-Loop Peak Out TPS | `1k/1k` Peak Out TPS | `1k/1k` Max Goodput (`req/s`) | `8k/1k` Peak Out TPS | Comparison |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | :--- |
@@ -55,6 +55,7 @@ All runs in sections A and B use `vllm bench serve` with `--no-enable-prefix-cac
 | 1 Host (`4`) | `vllm-tpu` (JAX) `TP=2, DP=4` | 1,279.3 ms / 5.70 ms | 1,789.4 (`CON=32`) | 5,847.0 (`CON=64`) | 3.340 (`CON=32`) | 2,696.6 (`CON=64`) | **2.37× `1k/1k` TPS** vs. 1-host BF16 JAX (`4×` DP replicas/host) |
 | 2 Hosts (`8`) | `2x vllm-tpu` (JAX) `TP=2, DP=4` | 1,389.1 ms / 5.68 ms | 3,315.7 (`CON=64`) | 14,277.1 (`CON=256`) | 5.054 (`CON=64`) | 6,533.7 (`CON=128`) | **2.44× `1k/1k` peak** vs. 1-host MXFP4 JAX |
 | **4 Hosts (`16`)** | **`4x vllm-tpu` (JAX) `TP=2, DP=4`** | 1,381.2 ms / 5.70 ms | **8,749.7** (`CON=128`) | **20,366.9** (`CON=256`) | **8.584** (`CON=128`) | **9,820.8** (`CON=128`) | **3.48× `1k/1k` & 4.89× `22k/4k` peak** vs. 1-host MXFP4 JAX |
+| **4 Hosts (`16`)** | **`4x vllm-torchtpu` (patched) `TP=8, EP`** | **721.0 ms / 4.77 ms** | 2,613.9 (`CON=32`; 3,842.6 @ `RPS=6`) | – | – | – | **1.92× lower `CON=1` TTFT** vs. 4-host JAX (`TP=2, DP=4`); `CON=16` **2,182.0 tok/s** (`6.88 ms` TPOT); full `22k/4k` sweep & BF16 KV comparison in [`APPENDIX.md`](./APPENDIX.md) sec. 6 |
 
 ### C. Follow-Up: One Host at Higher Load (MXFP4 + FP8 KV)
 
@@ -166,7 +167,7 @@ For one 22k-token prompt with `sglang-torchtpu`, the median time to the first to
 For GKE Standard + WorkloadPolicy + DWS Calendar reservation setup, see [`INFRA_SETUP.md`](./INFRA_SETUP.md) or run [`k8s/provision_gke_dws_calendar.sh`](./k8s/provision_gke_dws_calendar.sh):
 
 ```bash
-# 1. Stage BF16 (233.7 GB) and MXFP4 (65.3 GB) checkpoints to GCS
+# 1. Stage BF16-loaded (119 GB on disk, ~234 GB in memory) and MXFP4 (65.3 GB) checkpoints to GCS
 python3 scripts/stage_hf_to_gcs.py --repo-id lmsys/gpt-oss-120b-bf16 --gcs-bucket "${GCS_BUCKET}" --gcs-prefix models/lmsys/gpt-oss-120b-bf16
 python3 scripts/stage_hf_to_gcs.py --repo-id openai/gpt-oss-120b --gcs-bucket "${GCS_BUCKET}" --gcs-prefix models/openai/gpt-oss-120b
 
